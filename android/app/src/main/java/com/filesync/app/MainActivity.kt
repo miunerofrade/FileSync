@@ -11,7 +11,8 @@ import android.os.ParcelFileDescriptor
 import android.text.method.LinkMovementMethod
 import android.widget.TextView
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.BackHandler
+import androidx.activity.BackEventCompat
+import androidx.activity.compose.PredictiveBackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -61,6 +62,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -70,8 +72,10 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -79,9 +83,11 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
@@ -90,6 +96,8 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.documentfile.provider.DocumentFile
 import com.filesync.app.api.HttpServerApi
 import com.filesync.app.api.PutStatus
@@ -127,11 +135,13 @@ class AppModel(val context: Context) {
     var port by mutableStateOf(prefs.getString("port", "8080") ?: "8080")
     var token by mutableStateOf(prefs.getString("token", "") ?: "")
     var subDir by mutableStateOf(prefs.getString("subdir", "") ?: "")
+    var dynamicColor by mutableStateOf(prefs.getBoolean("dynamicColor", true))
     var treeUri by mutableStateOf<String?>(prefs.getString("treeUri", null))
     var busy by mutableStateOf(false)
     var lastStats by mutableStateOf<String?>(null)
     var refreshTick by mutableStateOf(0)
     var conflict by mutableStateOf<ConflictPrompt?>(null)
+    var backProgress by mutableFloatStateOf(0f)
     val logLines = mutableStateListOf<String>()
 
     /** host 可直接填完整 URL（https://IP:8443）；不带协议头时自动按 HTTPS 处理。 */
@@ -153,7 +163,8 @@ class AppModel(val context: Context) {
             .putString("port", port.trim())
             .putString("token", token.trim())
             .putString("subdir", subDir.trim())
-            .apply()
+            .putBoolean("dynamicColor", dynamicColor)
+            .commit()
     }
 
     fun onTreePicked(uri: Uri) {
@@ -292,21 +303,50 @@ class MainActivity : ComponentActivity() {
 fun FileSyncApp() {
     val ctx = LocalContext.current
     val model = remember { AppModel(ctx.applicationContext) }
-    FileSyncTheme {
+    FileSyncTheme(useDynamicColor = model.dynamicColor) {
         Surface(Modifier.fillMaxSize()) {
-            BackHandler(enabled = model.screen != Screen.Main) { model.screen = Screen.Main }
+            // 预测性返回（官方模式）：跟手收集进度 → 提交导航 / 取消复位
+            PredictiveBackHandler(enabled = model.screen != Screen.Main) { backEvent ->
+                try {
+                    backEvent.collect { e -> model.backProgress = e.progress }
+                    model.screen = Screen.Main
+                    model.backProgress = 0f
+                } catch (_: CancellationException) {
+                    model.backProgress = 0f
+                }
+            }
             AnimatedContent(
                 targetState = model.screen,
                 transitionSpec = {
-                    (fadeIn(tween(160)) + slideInHorizontally(tween(160)) { it / 12 })
-                        .togetherWith(fadeOut(tween(120)) + slideOutHorizontally(tween(120)) { -it / 12 })
+                    // 返回（目标为主屏）：内容向右推回；前进：从右滑入
+                    val goingBack = targetState == Screen.Main
+                    if (goingBack) {
+                        (fadeIn(tween(150)) + slideInHorizontally(tween(150)) { -it / 12 })
+                            .togetherWith(fadeOut(tween(120)) + slideOutHorizontally(tween(120)) { it / 12 })
+                    } else {
+                        (fadeIn(tween(160)) + slideInHorizontally(tween(160)) { it / 12 })
+                            .togetherWith(fadeOut(tween(120)) + slideOutHorizontally(tween(120)) { -it / 12 })
+                    }
                 },
                 label = "screen",
             ) { s ->
-                when (s) {
-                    Screen.Main -> MainScreen(model)
-                    Screen.Settings -> SettingsScreen(model)
-                    is Screen.Preview -> PreviewScreen(model, s.rel)
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            val p = model.backProgress
+                            scaleX = 1f - 0.1f * p
+                            scaleY = 1f - 0.1f * p
+                            alpha = 1f - 0.25f * p
+                            shape = RoundedCornerShape(28.dp * p)
+                            clip = p > 0.02f
+                        }
+                ) {
+                    when (s) {
+                        Screen.Main -> MainScreen(model)
+                        Screen.Settings -> SettingsScreen(model)
+                        is Screen.Preview -> PreviewScreen(model, s.rel)
+                    }
                 }
             }
             model.conflict?.let { ConflictDialog(it) }
@@ -315,11 +355,11 @@ fun FileSyncApp() {
 }
 
 @Composable
-private fun FileSyncTheme(content: @Composable () -> Unit) {
+private fun FileSyncTheme(useDynamicColor: Boolean, content: @Composable () -> Unit) {
     val dark = isSystemInDarkTheme()
     val ctx = LocalContext.current
     val scheme = when {
-        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->
+        useDynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->
             if (dark) dynamicDarkColorScheme(ctx) else dynamicLightColorScheme(ctx)
         dark -> darkColorScheme()
         else -> lightColorScheme()
@@ -335,6 +375,14 @@ private fun MainScreen(model: AppModel) {
     var entries by remember(dir) { mutableStateOf<List<DirEntry>?>(null) }
     var selected by remember { mutableStateOf(setOf<String>()) }
     var viewMode by remember { mutableStateOf("local") }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, model.treeUri) {
+        val obs = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) model.refreshTick++
+        }
+        lifecycleOwner.lifecycle.addObserver(obs)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
+    }
     var cloudList by remember { mutableStateOf<List<RemoteFile>?>(null) }
     LaunchedEffect(dir, model.refreshTick, model.treeUri) {
         entries = if (model.treeUri == null) {
@@ -412,7 +460,7 @@ private fun MainScreen(model: AppModel) {
                 )
             }
             AnimatedVisibility(
-                visible = selected.isNotEmpty(),
+                visible = selected.isNotEmpty() && viewMode == "local",
                 enter = expandVertically() + fadeIn(),
                 exit = shrinkVertically() + fadeOut(),
             ) {
@@ -420,7 +468,7 @@ private fun MainScreen(model: AppModel) {
                     onClick = {
                         val sel = selected
                         scope.launch {
-                            model.runSync { it in sel }
+                            model.runSync { p -> sel.any { s -> p == s || p.startsWith("$s/") } }
                             selected = emptySet()
                         }
                     },
@@ -434,9 +482,21 @@ private fun MainScreen(model: AppModel) {
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
                 FilterChip(selected = viewMode == "local", onClick = { viewMode = "local" }, label = { Text("本地") })
                 FilterChip(selected = viewMode == "cloud", onClick = { viewMode = "cloud" }, label = { Text("云端") })
+                if (viewMode == "local") {
+                    Spacer(Modifier.weight(1f))
+                    val curFiles = (entries ?: emptyList()).filter { !it.isDir }.map { joinDir(dir, it.name) }
+                    val allSel = curFiles.isNotEmpty() && curFiles.all { it in selected }
+                    TextButton(
+                        onClick = {
+                            selected = if (allSel) selected - curFiles.toSet() else selected + curFiles.toSet()
+                        },
+                        enabled = curFiles.isNotEmpty(),
+                    ) { Text(if (allSel) "取消全选" else "全选") }
+                }
             }
             if (viewMode == "cloud") {
                 CloudFileList(
@@ -460,9 +520,15 @@ private fun MainScreen(model: AppModel) {
                                 Modifier
                                     .fillMaxWidth()
                                     .clickable { dir = rel }
-                                    .padding(horizontal = 20.dp, vertical = 12.dp),
+                                    .padding(horizontal = 8.dp, vertical = 2.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
+                                Checkbox(
+                                    checked = rel in selected,
+                                    onCheckedChange = { on ->
+                                        selected = if (on) selected + rel else selected - rel
+                                    },
+                                )
                                 Text("▸ ", color = MaterialTheme.colorScheme.primary)
                                 Text(en.name, style = MaterialTheme.typography.bodyLarge)
                             }
@@ -596,6 +662,13 @@ private fun SettingsScreen(model: AppModel) {
                 modifier = Modifier.fillMaxWidth(),
             )
             TextButton(onClick = { cfgImporter.launch(arrayOf("application/json", "text/plain", "application/octet-stream", "*/*")) }) { Text("从文件导入配置") }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text("动态取色（Material You）", style = MaterialTheme.typography.bodyMedium)
+                Switch(checked = model.dynamicColor, onCheckedChange = { model.dynamicColor = it; model.saveSettings() })
+            }
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
