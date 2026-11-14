@@ -197,7 +197,7 @@ class AppModel(val context: Context) {
         prefs.edit()
             .putString("treeUri", treeUri)
             .putString("subdir", "")
-            .putString("state:${treeUri ?: ""}", "")
+            .putString("state:${treeUri ?: ""}:", "")
             .commit()
         screen = Screen.Main
         mainDir = ""
@@ -227,7 +227,10 @@ class AppModel(val context: Context) {
             .build()
     }
 
-    fun stateStore(): PrefsStateStore = PrefsStateStore(prefs, "state:" + (treeUri ?: ""))
+    /** 基线按"同步目录 + 分组"独立存储：修改云端子目录（分组）后无需重置，
+     *  新组首次同步自动按内容对齐；切回旧组基线仍在。 */
+    fun stateStore(): PrefsStateStore =
+        PrefsStateStore(prefs, "state:" + (treeUri ?: "") + ":" + subDir.trim())
 
     fun resetBaseline() {
         stateStore().save(emptyMap())
@@ -785,6 +788,11 @@ private fun SettingsScreen(model: AppModel) {
                 label = { Text("云端子目录（可选，同步组）") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
+            )
+            Text(
+                "修改分组即换同步组：基线按分组独立保存，本地文件不受影响，改完直接同步",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             TextButton(onClick = { cfgImporter.launch(arrayOf("application/json", "text/plain", "application/octet-stream", "*/*")) }) { Text("从文件导入配置") }
             Row(

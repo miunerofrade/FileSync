@@ -179,6 +179,9 @@ CLI（Token 也可用环境变量 FILESYNC_TOKEN）：
 # 多文件夹隔离：同一配置 + 不同 --subdir（云端按子目录分文件夹存放，互不混淆）
 ./filesync init --server https://124.222.6.120:8443 --token <令牌> --subdir notes D:/notes
 ./filesync sync
+# 以后修改分组（换同步组）：
+#   CLI: filesync init --force --subdir notes2 D:/notes（覆盖配置并清空基线，本地文件不动）
+#   App: 设置页直接改"云端子目录"（基线按分组独立保存，改完直接同步即可）
 ```
 
 Android App 设置页：服务器地址填 `https://124.222.6.120:8443`，访问令牌填部署时生成的值。

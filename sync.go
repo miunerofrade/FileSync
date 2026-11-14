@@ -41,6 +41,7 @@ func cmdInit(args []string) {
 	token := fsSet.String("token", os.Getenv("FILESYNC_TOKEN"), "访问令牌")
 	subdir := fsSet.String("subdir", "", "云端子目录（同步组前缀）")
 	configFile := fsSet.String("config", "", "从配置文件导入（JSON：server/token，覆盖 --server/--token）")
+	force := fsSet.Bool("force", false, "已初始化的目录重新初始化：覆盖 server/token/subdir，基线清空，本地文件不动")
 	fsSet.Parse(args)
 	if fsSet.NArg() > 1 {
 		badUsage()
@@ -65,7 +66,10 @@ func cmdInit(args []string) {
 		fatal("创建目录失败: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(absDir, stateFileName)); err == nil {
-		fatal("目录已初始化: %s（删除 %s 可重新初始化）", absDir, stateFileName)
+		if !*force {
+			fatal("目录已初始化: %s（修改分组/服务器可加 --force，本地文件不会被动）", absDir)
+		}
+		fmt.Println("--force: 已重置配置与基线（本地文件未改动）")
 	}
 	c, err := NewClient(*server, *token, *subdir)
 	if err != nil {
