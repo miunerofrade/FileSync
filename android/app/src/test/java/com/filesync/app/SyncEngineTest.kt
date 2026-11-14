@@ -57,6 +57,11 @@ class FakeServer : ServerApi {
         files[path] = data
         return PutStatus.CREATED
     }
+
+    override fun delete(path: String): Boolean {
+        files.remove(path)
+        return true
+    }
 }
 
 class MemState(initial: Map<String, StateEntry> = emptyMap()) : StateStore {

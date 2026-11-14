@@ -48,6 +48,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
@@ -1058,6 +1059,8 @@ private fun formatBytes(n: Long): String {
 @Composable
 private fun CloudFileList(model: AppModel, refreshTick: Int, modifier: Modifier = Modifier) {
     var list by remember { mutableStateOf<List<RemoteFile>?>(null) }
+    var confirmDelete by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
     LaunchedEffect(refreshTick) {
         list = withContext(Dispatchers.IO) {
             runCatching { model.api().ls("") }.getOrNull()
@@ -1069,13 +1072,48 @@ private fun CloudFileList(model: AppModel, refreshTick: Int, modifier: Modifier 
         l.isEmpty() -> Box(modifier, contentAlignment = Alignment.Center) { Text("云端为空") }
         else -> LazyColumn(modifier) {
             items(l) { e ->
-                Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp)) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                     Column(Modifier.weight(1f)) {
                         Text(e.path, style = MaterialTheme.typography.bodyLarge)
                         Text(formatBytes(e.size), style = MaterialTheme.typography.bodySmall)
                     }
+                    IconButton(onClick = { confirmDelete = e.path }) {
+                        Icon(Icons.Default.Delete, contentDescription = "删除云端文件 ${e.path}")
+                    }
                 }
             }
         }
+    }
+    confirmDelete?.let { path ->
+        AlertDialog(
+            onDismissRequest = { confirmDelete = null },
+            title = { Text("删除云端文件") },
+            text = {
+                Text("将只删除云端的 $path。\n本地文件不会被改动；下次同步会提示\u201c服务器已不存在，本地保留\u201d。")
+            },
+            confirmButton = {
+                TextButton({
+                    confirmDelete = null
+                    scope.launch {
+                        val ok = withContext(Dispatchers.IO) {
+                            try {
+                                model.api().delete(path)
+                            } catch (e: Exception) {
+                                model.log("删除失败 $path: ${e.message}")
+                                false
+                            }
+                        }
+                        if (ok) {
+                            model.log("已删除云端 $path")
+                            model.refreshTick++ // 触发云端列表刷新
+                        }
+                    }
+                }) { Text("删除") }
+            },
+            dismissButton = { TextButton({ confirmDelete = null }) { Text("取消") } },
+        )
     }
 }

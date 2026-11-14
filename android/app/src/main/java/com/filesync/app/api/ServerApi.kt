@@ -12,4 +12,7 @@ interface ServerApi {
     fun get(path: String): Pair<ByteArray, String>?
 
     fun put(path: String, data: ByteArray, overwrite: Boolean, ifMatch: String?): PutStatus
+
+    /** 删除云端文件（仅云端，不影响本地）。返回 true=已删除或云端本就不存在。 */
+    fun delete(path: String): Boolean
 }

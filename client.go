@@ -232,6 +232,35 @@ func (c *Client) Get(wire, localPath string, overwrite bool) (int64, string, err
 	return n, got, nil
 }
 
+// Delete 删除云端文件（recursive=1 时删除整个远端子树）。仅影响云端，
+// 绝不触碰本地文件；云端不存在视为已删除（幂等成功）。
+func (c *Client) Delete(rel string, recursive bool) error {
+	wire := c.joinSub(rel)
+	if wire == "" {
+		return errors.New("拒绝删除云端根目录")
+	}
+	v := url.Values{"path": {wire}}
+	if recursive {
+		v.Set("recursive", "1")
+	}
+	req, err := c.newRequest(http.MethodDelete, c.base+"/api/delete?"+v.Encode(), nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return fmt.Errorf("连接服务端失败: %w", err)
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusOK, http.StatusNotFound:
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return nil
+	default:
+		return serverError(resp)
+	}
+}
+
 // errRemoteExists 标记“远端已存在且未覆盖”的冲突，目录上传据此跳过。
 var errRemoteExists = errors.New("远端已存在")
 
@@ -398,6 +427,43 @@ func cmdPut(args []string) {
 		fatal("%v", walkErr)
 	}
 	fmt.Printf("目录上传完成: 新增 %d, 跳过 %d, 失败 %d\n", uploaded, skipped, failed)
+	if failed > 0 {
+		os.Exit(1)
+	}
+}
+
+// cmdRm 删除云端文件/目录（仅云端，本地文件不受影响）。
+func cmdRm(args []string) {
+	fsSet := flag.NewFlagSet("rm", flag.ExitOnError)
+	server := fsSet.String("server", defaultServer, "服务端地址")
+	token := fsSet.String("token", os.Getenv("FILESYNC_TOKEN"), "访问令牌")
+	subdir := fsSet.String("subdir", "", "云端子目录（同步组前缀）")
+	recursive := fsSet.Bool("r", false, "递归删除整个远端子目录")
+	fsSet.Parse(args)
+	if fsSet.NArg() < 1 {
+		badUsage()
+	}
+	c, err := NewClient(*server, *token, *subdir)
+	if err != nil {
+		fatal("%v", err)
+	}
+	failed := 0
+	for _, arg := range fsSet.Args() {
+		p := strings.TrimSuffix(filepath.ToSlash(filepath.Clean(arg)), "/")
+		if p == "." || p == "/" || p == "" {
+			fatal("拒绝删除云端根目录")
+		}
+		wire, err := SanitizeRelPath(p)
+		if err != nil {
+			fatal("远端路径不合法: %v", err)
+		}
+		if err := c.Delete(wire, *recursive); err != nil {
+			fmt.Fprintf(os.Stderr, "失败: %s: %v\n", wire, err)
+			failed++
+			continue
+		}
+		fmt.Printf("DELETE %s\n", wire)
+	}
 	if failed > 0 {
 		os.Exit(1)
 	}

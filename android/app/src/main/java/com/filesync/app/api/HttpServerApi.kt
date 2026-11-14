@@ -108,6 +108,22 @@ class HttpServerApi(baseUrl: String, private val token: String, subDir: String) 
         }
     }
 
+    override fun delete(path: String): Boolean {
+        val c = open("/api/delete", mapOf("path" to joinSub(path)))
+        c.requestMethod = "DELETE"
+        return when (c.responseCode) {
+            // 404 视为幂等成功（云端已不存在）
+            200, 404 -> {
+                c.inputStream.use { it.readBytes() }
+                true
+            }
+            else -> {
+                c.errorStream?.use { it.readBytes() }
+                throw ServerException("删除失败 HTTP ${c.responseCode}", c.responseCode)
+            }
+        }
+    }
+
     private fun mapStatus(code: Int): PutStatus = when (code) {
         201 -> PutStatus.CREATED
         409, 412 -> PutStatus.CONFLICT

@@ -77,6 +77,8 @@ func (s *Server) Handler() http.Handler {
 			s.handleGet(w, r)
 		case r.URL.Path == "/api/put" && r.Method == http.MethodPut:
 			s.handlePut(w, r)
+		case r.URL.Path == "/api/delete" && r.Method == http.MethodDelete:
+			s.handleDelete(w, r)
 		default:
 			writeError(w, http.StatusNotFound, "未知接口")
 		}
@@ -336,6 +338,45 @@ func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
 		"size":   size,
 		"sha256": gotSum,
 	})
+}
+
+// handleDelete 删除云端文件（仅影响服务端数据目录，不涉及任何客户端本地文件）。
+// recursive=1 时删除整个远端子树；空路径一律拒绝（防误删数据根目录）。
+func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	wire, full, err := s.fullPath(q.Get("path"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if wire == "" {
+		writeError(w, http.StatusBadRequest, "拒绝删除数据根目录")
+		return
+	}
+	info, err := os.Lstat(full)
+	if err != nil {
+		if os.IsNotExist(err) {
+			writeError(w, http.StatusNotFound, "文件不存在")
+		} else {
+			writeError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	if info.IsDir() && q.Get("recursive") != "1" {
+		writeError(w, http.StatusBadRequest, "目标是目录（recursive=1 可删除整个子树）")
+		return
+	}
+	if info.IsDir() {
+		err = os.RemoveAll(full)
+	} else {
+		err = os.Remove(full)
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "删除失败: "+err.Error())
+		return
+	}
+	log.Printf("DELETE %s <- %s", wire, r.RemoteAddr)
+	writeJSON(w, http.StatusOK, map[string]any{"path": wire, "deleted": true})
 }
 
 func writeError(w http.ResponseWriter, code int, msg string) {

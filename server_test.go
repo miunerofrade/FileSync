@@ -4,6 +4,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -54,6 +57,92 @@ func TestNoTokenServerAllowsAll(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		t.Errorf("未启用认证时期望 200, 实际 %d", resp.StatusCode)
+	}
+}
+
+func TestDeleteEndpoint(t *testing.T) {
+	srv, err := NewServer(t.TempDir(), "secret123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(srv.root, "a.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.MkdirAll(filepath.Join(srv.root, "d/sub"), 0o755)
+	_ = os.WriteFile(filepath.Join(srv.root, "d/sub/b.txt"), []byte("x"), 0o644)
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	del := func(path string, recursive bool) int {
+		q := url.Values{"path": {path}}
+		if recursive {
+			q.Set("recursive", "1")
+		}
+		req, _ := http.NewRequest(http.MethodDelete, ts.URL+"/api/delete?"+q.Encode(), nil)
+		req.Header.Set("Authorization", "Bearer secret123")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	if got := del("a.txt", false); got != 200 {
+		t.Errorf("删除文件期望 200, 实际 %d", got)
+	}
+	if _, err := os.Stat(filepath.Join(srv.root, "a.txt")); !os.IsNotExist(err) {
+		t.Errorf("文件应已被删除")
+	}
+	// 幂等：再删一次返回 404，客户端据此视为已删除
+	if got := del("a.txt", false); got != 404 {
+		t.Errorf("重复删除期望 404, 实际 %d", got)
+	}
+	// 防误删根目录
+	if got := del("", false); got != 400 {
+		t.Errorf("空路径期望 400, 实际 %d", got)
+	}
+	if got := del("", true); got != 400 {
+		t.Errorf("空路径递归期望 400, 实际 %d", got)
+	}
+	// 非空目录需 recursive=1
+	if got := del("d", false); got != 400 {
+		t.Errorf("非空目录不递归期望 400, 实际 %d", got)
+	}
+	if got := del("d", true); got != 200 {
+		t.Errorf("递归删除目录期望 200, 实际 %d", got)
+	}
+	if _, err := os.Stat(filepath.Join(srv.root, "d")); !os.IsNotExist(err) {
+		t.Errorf("目录子树应已被删除")
+	}
+}
+
+func TestClientDeleteMapping(t *testing.T) {
+	var gotURI, gotMethod string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotURI, gotMethod = r.URL.RequestURI(), r.Method
+		w.Write([]byte(`{}`))
+	}))
+	defer ts.Close()
+
+	c, err := NewClient(ts.URL, "", "photos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Delete("a/b.jpg", true); err != nil {
+		t.Fatalf("delete 失败: %v", err)
+	}
+	if gotMethod != http.MethodDelete {
+		t.Errorf("方法应为 DELETE, 实际 %s", gotMethod)
+	}
+	if !strings.Contains(gotURI, "path=photos%2Fa%2Fb.jpg") || !strings.Contains(gotURI, "recursive=1") {
+		t.Errorf("未正确映射 subdir/recursive: %s", gotURI)
+	}
+	// 云端根目录拒绝（subdir 为空时）
+	c2, _ := NewClient(ts.URL, "", "")
+	if err := c2.Delete("", false); err == nil {
+		t.Errorf("空路径应被拒绝")
 	}
 }
 

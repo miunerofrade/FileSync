@@ -54,13 +54,15 @@ cd /d/notes
 ./filesync sync                 # 双向同步整个目录
 ./filesync sync docs            # 只同步子目录
 ./filesync sync --keep local    # 冲突自动保留本地版本
+./filesync rm docs/a.md         # 只删云端文件（本地不受影响）；-r 递归删远端子目录
 ```
 
 Android App：
 
 1. 设置页填写服务器 IP / 端口，"测试连接"确认
 2. 选择同步目录（SAF，权限持久化）
-3. 主屏点"同步"一键双向同步；文件列表可勾选多选同步
+3. 主屏点"同步"一键双向同步；文件列表可勾选多选同步；
+   云端视图（Chip 切换）中可删除云端文件（只删云端，本地保留）
 4. 点击 Markdown 文件 → 预览/编辑/保存；PDF 文件 → 内置阅读
 
 ## 同步原理（CLI 与 App 一致）
@@ -91,6 +93,7 @@ Android App：
 | GET  | `/api/ls?prefix=` | 文件列表（path / size / sha256 / mod_time） |
 | GET  | `/api/get?path=` | 下载文件，响应头 `X-Checksum-SHA256` |
 | PUT  | `/api/put?path=&overwrite=&if-match=` | 上传；新文件 201，已存在 409，条件覆盖不符 412 |
+| DELETE | `/api/delete?path=&recursive=` | 删除云端文件/目录；404 幂等（视为已删除）；空路径拒绝（防误删根目录） |
 
 ## 可靠性与安全设计
 
@@ -107,7 +110,8 @@ Android App：
 - 无鉴权，仅适用于本机或可信局域网
 - 变化检测基于内容哈希：每次 sync 需读取两端全部文件（个人文档场景可接受）
 - 不上传空目录；不保留/同步文件修改时间
-- 删除不传播：需手动处理两端分歧（无 rm 命令）
+- 删除不传播：一端删除只在另一端保留并提示；需要删云端时用 `filesync rm`
+  （或 App 云端列表的删除按钮），只删云端不动本地；两端分歧需手动处理
 - 不做分块/断点续传；并发同步同一服务器未加锁
 - App 的 Markdown 预览基于 Markwon（唯一第三方依赖）；PDF 用内置 PdfRenderer
 

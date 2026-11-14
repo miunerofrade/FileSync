@@ -30,6 +30,10 @@ const usage = `FileSync —— 轻量级、中心化、手动触发的文件同�
   filesync get [--server URL] [--overwrite] 远端路径 [本地路径]
       手工下载单个文件。
 
+  filesync rm [-r] [--server URL] [--subdir 子目录] 远端路径...
+      删除云端文件（-r 递归删除整个远端子目录）。只删云端，绝不触碰本地文件；
+      下次 sync 时本地文件会提示"服务器已不存在，本地保留"。
+
 说明:
   · 远端路径以 '/' 分隔；绝对路径、'..'、反斜杠等一律拒绝，文件被限制在数据目录内。
   · 所有传输先写临时文件并做 SHA-256 校验，成功后原子改名；中断不会损坏已有文件。
@@ -49,6 +53,8 @@ func main() {
 		cmdPut(os.Args[2:])
 	case "get":
 		cmdGet(os.Args[2:])
+	case "rm":
+		cmdRm(os.Args[2:])
 	case "init":
 		cmdInit(os.Args[2:])
 	case "sync":
