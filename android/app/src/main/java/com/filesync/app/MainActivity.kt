@@ -109,7 +109,16 @@ import com.filesync.app.files.SafFiles
 import com.filesync.app.sync.ConflictInfo
 import com.filesync.app.sync.SyncEngine
 import com.filesync.app.util.sha256Hex
+import io.noties.markwon.AbstractMarkwonPlugin
 import io.noties.markwon.Markwon
+import io.noties.markwon.MarkwonSpansFactory
+import io.noties.markwon.core.spans.LastLineSpacingSpan
+import io.noties.markwon.ext.strikethrough.StrikethroughPlugin
+import io.noties.markwon.ext.tables.TablePlugin
+import io.noties.markwon.ext.tasklist.TaskListPlugin
+import io.noties.markwon.html.HtmlPlugin
+import io.noties.markwon.linkify.LinkifyPlugin
+import org.commonmark.node.Paragraph
 import kotlin.math.max
 import kotlin.math.min
 import kotlinx.coroutines.CancellationException
@@ -196,6 +205,24 @@ class AppModel(val context: Context) {
     fun localFiles(): SafFiles = SafFiles(context, Uri.parse(treeUri))
 
     fun api(): ServerApi = HttpServerApi(serverUrl, token.trim(), subDir.trim())
+
+    /** 全局唯一 Markwon（官方建议单例复用）：完整插件集 + 段落间距（官方 Recipes 方案）。 */
+    val markwon: Markwon by lazy {
+        val density = context.resources.displayMetrics.density
+        Markwon.builder(context)
+            .usePlugin(StrikethroughPlugin.create())
+            .usePlugin(TablePlugin.create(context))
+            .usePlugin(TaskListPlugin.create(context))
+            .usePlugin(HtmlPlugin.create())
+            .usePlugin(LinkifyPlugin.create())
+            .usePlugin(object : AbstractMarkwonPlugin() {
+                override fun configureSpansFactory(builder: MarkwonSpansFactory.Builder) {
+                    val spacing = (8 * density).toInt()
+                    builder.addFactory(Paragraph::class.java) { _, _ -> LastLineSpacingSpan(spacing) }
+                }
+            })
+            .build()
+    }
 
     fun stateStore(): PrefsStateStore = PrefsStateStore(prefs, "state:" + (treeUri ?: ""))
 
@@ -838,15 +865,13 @@ private fun MarkdownPane(model: AppModel, rel: String) {
                 ),
             )
         } else {
-            MarkdownView(c, Modifier.weight(1f).fillMaxWidth())
+            MarkdownView(model, c, Modifier.weight(1f).fillMaxWidth().padding(12.dp))
         }
     }
 }
 
 @Composable
-private fun MarkdownView(markdown: String, modifier: Modifier = Modifier) {
-    val ctx = LocalContext.current
-    val markwon = remember { Markwon.create(ctx) }
+private fun MarkdownView(model: AppModel, markdown: String, modifier: Modifier = Modifier) {
     val onSurface = MaterialTheme.colorScheme.onSurface
     AndroidView(
         modifier = modifier,
@@ -855,7 +880,9 @@ private fun MarkdownView(markdown: String, modifier: Modifier = Modifier) {
         },
         update = { tv ->
             tv.setTextColor(onSurface.toArgb())
-            markwon.setMarkdown(tv, markdown)
+            tv.textSize = 15f
+            tv.setLineSpacing(4 * tv.resources.displayMetrics.density, 1f)
+            model.markwon.setMarkdown(tv, markdown)
         },
     )
 }
