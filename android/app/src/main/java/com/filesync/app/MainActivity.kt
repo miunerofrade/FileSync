@@ -49,6 +49,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
@@ -453,10 +454,18 @@ private fun MainScreen(model: AppModel) {
         topBar = {
             TopAppBar(
                 title = {
-                    Text(
-                        if (model.mainDir.isEmpty()) "FileSync"
-                        else model.mainDir.substringAfterLast('/'),
-                    )
+                    Column {
+                        Text(
+                            if (model.mainDir.isEmpty()) "FileSync"
+                            else model.mainDir.substringAfterLast('/'),
+                        )
+                        // 当前分组始终可见，避免"在往哪个组同步"产生歧义
+                        Text(
+                            "云端分组: " + model.subDir.trim().ifEmpty { "（根目录）" },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 },
                 navigationIcon = {
                     if (model.mainDir.isNotEmpty()) {
@@ -723,6 +732,7 @@ private fun SettingsScreen(model: AppModel) {
     var testResult by remember { mutableStateOf<String?>(null) }
     var testing by remember { mutableStateOf(false) }
     var confirmReset by remember { mutableStateOf(false) }
+    var showGroupInfo by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) model.onTreePicked(uri)
@@ -788,11 +798,11 @@ private fun SettingsScreen(model: AppModel) {
                 label = { Text("云端子目录（可选，同步组）") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
-            )
-            Text(
-                "修改分组即换同步组：基线按分组独立保存，本地文件不受影响，改完直接同步",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                trailingIcon = {
+                    IconButton(onClick = { showGroupInfo = true }) {
+                        Icon(Icons.Default.Info, contentDescription = "分组说明")
+                    }
+                },
             )
             TextButton(onClick = { cfgImporter.launch(arrayOf("application/json", "text/plain", "application/octet-stream", "*/*")) }) { Text("从文件导入配置") }
             Row(
@@ -830,6 +840,19 @@ private fun SettingsScreen(model: AppModel) {
                 TextButton(onClick = { confirmReset = true }) { Text("重置同步基线") }
             }
         }
+    }
+    if (showGroupInfo) {
+        AlertDialog(
+            onDismissRequest = { showGroupInfo = false },
+            title = { Text("云端分组") },
+            text = {
+                Text(
+                    "分组即云端子目录：相同分组的设备互相同步，不同分组互相隔离。\n\n" +
+                        "修改分组即换同步组：基线按分组独立保存，本地文件不受影响，改完直接同步即可。",
+                )
+            },
+            confirmButton = { TextButton({ showGroupInfo = false }) { Text("知道了") } },
+        )
     }
     if (confirmReset) {
         AlertDialog(
