@@ -121,22 +121,24 @@ class SyncEngine(
 
     private suspend fun handlePresent(ctx: Ctx, rel: String, le: LocalEntry, re: RemoteFile, base: StateEntry?) {
         val lh = local.hash(rel) ?: throw Exception("本地文件不可读")
-        val b = base
-        if (b == null) {
-            // 首次遇到：两端一致直接采纳，否则按冲突处理
-            if (lh == re.sha256) {
-                ctx.record(rel, lh, le.size)
-                ctx.unchanged++
-                log("已一致 $rel")
-            } else {
-                conflictChoice(ctx, rel, le, lh, re)
-            }
+        // 决策入口：两端内容一致 → 无论基线是什么状态都直接收敛（自愈过期/损坏的基线）
+        log("判定 $rel: 本地=${lh.take(8)} 远端=${re.sha256.take(8)} 基线=${base?.sha256?.take(8) ?: "无"}")
+        if (lh == re.sha256) {
+            ctx.record(rel, lh, le.size)
+            ctx.unchanged++
+            log("已一致 $rel (${formatBytes(le.size)})")
             return
         }
+        val b = base
+        if (b == null) {
+            // 首次遇到两端内容不同 → 按冲突处理
+            conflictChoice(ctx, rel, le, lh, re)
+            return
+        }
+        // 此处必然 lh != re，两端至少有一端相对基线发生了变化
         val localChanged = lh != b.sha256
         val serverChanged = re.sha256 != b.sha256
         when {
-            !localChanged && !serverChanged -> ctx.unchanged++
             localChanged && !serverChanged -> {
                 val data = local.read(rel) ?: throw Exception("本地文件不可读")
                 when (server.put(rel, data, true, b.sha256)) {
@@ -157,15 +159,7 @@ class SyncEngine(
                 ctx.downloaded++
                 log("下载 $rel")
             }
-            else -> {
-                if (lh == re.sha256) {
-                    ctx.record(rel, lh, le.size)
-                    ctx.unchanged++
-                    log("已一致 $rel")
-                } else {
-                    conflictChoice(ctx, rel, le, lh, re)
-                }
-            }
+            else -> conflictChoice(ctx, rel, le, lh, re)
         }
     }
 

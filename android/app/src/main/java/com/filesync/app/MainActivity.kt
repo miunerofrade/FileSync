@@ -11,6 +11,7 @@ import android.os.ParcelFileDescriptor
 import android.text.method.LinkMovementMethod
 import android.widget.TextView
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -120,6 +121,7 @@ class AppModel(val context: Context) {
     fun log(s: String) {
         logLines.add(s)
         while (logLines.size > 200) logLines.removeAt(0)
+        android.util.Log.i("FileSync", s)
     }
 
     fun saveSettings() {
@@ -184,13 +186,14 @@ class AppModel(val context: Context) {
                 } catch (_: Exception) {
                 }
             }
-            val stats = buildEngine().sync(filter)
+            val stats = withContext(Dispatchers.IO) { buildEngine().sync(filter) }
             lastStats =
                 "上传 ${stats.uploaded} · 下载 ${stats.downloaded} · 无变化 ${stats.unchanged} · 冲突解决 ${stats.resolved} · 跳过 ${stats.skipped} · 需注意 ${stats.warnings}" +
                     if (stats.failed > 0) " · 失败 ${stats.failed}" else ""
             return stats
         } catch (e: Exception) {
-            log("同步失败: ${e.message}")
+            android.util.Log.e("FileSync", "runSync failed", e)
+            log("同步失败: ${e::class.java.simpleName}: ${e.message}")
             return null
         } finally {
             busy = false
@@ -232,6 +235,7 @@ class MainActivity : ComponentActivity() {
 fun FileSyncApp() {
     val ctx = LocalContext.current
     val model = remember { AppModel(ctx.applicationContext) }
+    BackHandler(enabled = model.screen != Screen.Main) { model.screen = Screen.Main }
     FileSyncTheme {
         Surface(Modifier.fillMaxSize()) {
             when (val s = model.screen) {

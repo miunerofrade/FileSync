@@ -10,7 +10,6 @@ import com.filesync.app.sync.StateStore
 import com.filesync.app.util.sha256Hex
 import java.io.InputStream
 import java.security.MessageDigest
-import java.util.UUID
 import org.json.JSONObject
 
 private val tempPrefixes = listOf(".fsync-tmp-", ".fsync-get-")
@@ -87,16 +86,29 @@ class SafFiles(private val context: Context, private val treeUri: Uri) : LocalFi
     override fun hash(rel: String): String? = try {
         val df = docFor(rel) ?: return null
         resolver.openInputStream(df.uri)?.use { ins ->
-            val md = MessageDigest.getInstance("SHA-256")
-            pump(ins, md)
-            sha256Hex(md.digest())
+            val bytes = ins.readBytes()
+            val h = sha256Hex(bytes)
+            android.util.Log.w(
+                "FileSyncHash",
+                "hash $rel uri=${df.uri.lastPathSegment} size=${bytes.size} -> $h",
+            )
+            h
         }
     } catch (_: Exception) {
         null
     }
 
     override fun read(rel: String): ByteArray? = try {
-        docFor(rel)?.let { df -> resolver.openInputStream(df.uri)?.use { it.readBytes() } }
+        docFor(rel)?.let { df ->
+            resolver.openInputStream(df.uri)?.use { ins ->
+                val bytes = ins.readBytes()
+                android.util.Log.w(
+                    "FileSyncHash",
+                    "read $rel uri=${df.uri.lastPathSegment} size=${bytes.size}",
+                )
+                bytes
+            }
+        }
     } catch (_: Exception) {
         null
     }
@@ -106,23 +118,20 @@ class SafFiles(private val context: Context, private val treeUri: Uri) : LocalFi
             val parts = rel.split("/")
             val fileName = parts.last()
             val dir = dirFor(if (parts.size == 1) "" else parts.dropLast(1).joinToString("/"), true) ?: return false
-            val tmpName = ".fsync-tmp-" + UUID.randomUUID().toString().substring(0, 8) + "-" + fileName
+            // 临时文件以时间戳命名（唯一，不会被去重改名）；内容完整落盘后，
+            // 先删旧目标再改名——改名目标不存在，必然精确生效。
+            val tmpName = ".fsync-tmp-" + System.currentTimeMillis() + "-" + fileName
             val tmp = dir.createFile(mimeOf(fileName), tmpName) ?: return false
             resolver.openOutputStream(tmp.uri)?.use { it.write(data) } ?: return false
-            if (renameTo(tmp.uri, fileName)) return true
-            // 多数 provider 不允许改名到已存在的名字：删除旧文件后重试
-            val old = dir.findFile(fileName)
-            if (old != null && !old.delete()) return false
-            renameTo(tmp.uri, fileName)
+            dir.findFile(fileName)?.delete()
+            try {
+                DocumentsContract.renameDocument(resolver, tmp.uri, fileName) != null
+            } catch (_: Exception) {
+                false
+            }
         } catch (_: Exception) {
             false
         }
-    }
-
-    private fun renameTo(tmpUri: Uri, fileName: String): Boolean = try {
-        DocumentsContract.renameDocument(resolver, tmpUri, fileName) != null
-    } catch (_: Exception) {
-        false
     }
 
     /** 清理进程被杀遗留的临时文件。 */
