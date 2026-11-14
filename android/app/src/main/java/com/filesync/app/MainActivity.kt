@@ -121,7 +121,6 @@ class AppModel(val context: Context) {
     fun log(s: String) {
         logLines.add(s)
         while (logLines.size > 200) logLines.removeAt(0)
-        android.util.Log.i("FileSync", s)
     }
 
     fun saveSettings() {

@@ -86,29 +86,16 @@ class SafFiles(private val context: Context, private val treeUri: Uri) : LocalFi
     override fun hash(rel: String): String? = try {
         val df = docFor(rel) ?: return null
         resolver.openInputStream(df.uri)?.use { ins ->
-            val bytes = ins.readBytes()
-            val h = sha256Hex(bytes)
-            android.util.Log.w(
-                "FileSyncHash",
-                "hash $rel uri=${df.uri.lastPathSegment} size=${bytes.size} -> $h",
-            )
-            h
+            val md = MessageDigest.getInstance("SHA-256")
+            pump(ins, md)
+            sha256Hex(md.digest())
         }
     } catch (_: Exception) {
         null
     }
 
     override fun read(rel: String): ByteArray? = try {
-        docFor(rel)?.let { df ->
-            resolver.openInputStream(df.uri)?.use { ins ->
-                val bytes = ins.readBytes()
-                android.util.Log.w(
-                    "FileSyncHash",
-                    "read $rel uri=${df.uri.lastPathSegment} size=${bytes.size}",
-                )
-                bytes
-            }
-        }
+        docFor(rel)?.let { df -> resolver.openInputStream(df.uri)?.use { it.readBytes() } }
     } catch (_: Exception) {
         null
     }

@@ -52,6 +52,8 @@ class SyncEngine(
         var failed = 0
 
         fun record(rel: String, sha: String, size: Long) {
+            val cur = st[rel]
+            if (cur?.sha256 == sha && cur.size == size) return
             st[rel] = StateEntry(sha, size)
             dirty = true
         }
@@ -122,11 +124,10 @@ class SyncEngine(
     private suspend fun handlePresent(ctx: Ctx, rel: String, le: LocalEntry, re: RemoteFile, base: StateEntry?) {
         val lh = local.hash(rel) ?: throw Exception("本地文件不可读")
         // 决策入口：两端内容一致 → 无论基线是什么状态都直接收敛（自愈过期/损坏的基线）
-        log("判定 $rel: 本地=${lh.take(8)} 远端=${re.sha256.take(8)} 基线=${base?.sha256?.take(8) ?: "无"}")
         if (lh == re.sha256) {
             ctx.record(rel, lh, le.size)
             ctx.unchanged++
-            log("已一致 $rel (${formatBytes(le.size)})")
+            log("已一致 $rel")
             return
         }
         val b = base
