@@ -211,7 +211,10 @@ class AppModel(val context: Context) {
 
     suspend fun pushLocal(rel: String): String = withContext(Dispatchers.IO) {
         try {
-            val data = localFiles().read(rel) ?: return@withContext "本地不存在"
+            val sf = localFiles()
+            val e = sf.entryFor(rel) ?: return@withContext "本地不存在"
+            if (e.ambiguous) return@withContext "同名歧义，拒绝上传"
+            val data = sf.read(e) ?: return@withContext "本地读取失败"
             when (api().put(rel, data, true, null)) {
                 PutStatus.CREATED -> "已用本地覆盖远端"
                 PutStatus.CONFLICT -> "远端已变化，被拒绝（请运行同步处理冲突）"
@@ -540,16 +543,24 @@ private fun MarkdownPane(model: AppModel, rel: String) {
     var editing by remember(rel) { mutableStateOf(false) }
     var text by remember(rel) { mutableStateOf("") }
     val scope = rememberCoroutineScope()
+    var missing by remember(rel) { mutableStateOf(false) }
     LaunchedEffect(rel) {
-        val c = withContext(Dispatchers.IO) {
-            model.localFiles().read(rel)?.toString(Charsets.UTF_8)
+        val sf = model.localFiles()
+        val e = withContext(Dispatchers.IO) { sf.entryFor(rel) }
+        if (e == null || e.ambiguous) {
+            missing = true
+            content = null
+        } else {
+            val c = withContext(Dispatchers.IO) { sf.read(e)?.toString(Charsets.UTF_8) }
+            content = c
+            text = c ?: ""
         }
-        content = c
-        text = c ?: ""
     }
     val c = content
     if (c == null) {
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text(if (missing) "本地不存在" else "加载中…")
+        }
         return
     }
     Column(Modifier.fillMaxSize()) {

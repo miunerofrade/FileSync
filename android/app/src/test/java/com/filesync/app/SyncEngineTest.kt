@@ -18,12 +18,15 @@ private fun b(s: String) = s.toByteArray(Charsets.UTF_8)
 
 class FakeLocal(initial: Map<String, String> = emptyMap()) : LocalFiles {
     val files = initial.mapValues { b(it.value) }.toMutableMap()
+    val ambiguousPaths = mutableSetOf<String>()
 
-    override fun list() = files.map { LocalEntry(it.key, it.value.size.toLong()) }
+    override fun list() = files.map {
+        LocalEntry(it.key, it.value.size.toLong(), null, it.key in ambiguousPaths)
+    }
 
-    override fun hash(rel: String) = files[rel]?.let { sha256Hex(it) }
+    override fun hash(e: LocalEntry) = files[e.path]?.let { sha256Hex(it) }
 
-    override fun read(rel: String) = files[rel]
+    override fun read(e: LocalEntry) = files[e.path]
 
     override fun write(rel: String, data: ByteArray): Boolean {
         files[rel] = data
@@ -282,5 +285,17 @@ class SyncEngineTest {
         assertEquals(1, st.uploaded)
         assertTrue(server.files.containsKey("a.md"))
         assertEquals(false, server.files.containsKey("b.md"))
+    }
+
+    @Test
+    fun `同名歧义跳过且不传输`() = runBlocking {
+        val local = FakeLocal(mapOf("a.md" to "v1", "b.md" to "v2"))
+        local.ambiguousPaths.add("a.md")
+        val server = FakeServer()
+        val state = MemState()
+        val st = sync(local, server, state)
+        assertEquals(1, st.failed)
+        assertEquals(false, server.files.containsKey("a.md"))
+        assertEquals("v2", String(server.files["b.md"]!!))
     }
 }

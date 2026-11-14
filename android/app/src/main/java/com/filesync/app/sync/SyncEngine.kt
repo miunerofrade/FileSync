@@ -5,6 +5,7 @@ import com.filesync.app.api.RemoteFile
 import com.filesync.app.api.ServerApi
 import com.filesync.app.files.LocalEntry
 import com.filesync.app.files.LocalFiles
+import com.filesync.app.util.sha256Hex
 
 data class ConflictInfo(
     val rel: String,
@@ -89,12 +90,16 @@ class SyncEngine(
     }
 
     private suspend fun handlePath(ctx: Ctx, rel: String, le: LocalEntry?, re: RemoteFile?, base: StateEntry?) {
+        if (le != null && le.ambiguous) {
+            ctx.failed++
+            log("失败: 同名歧义（目录中存在多个同名条目），已跳过: $rel")
+            return
+        }
         when {
             le != null && re != null -> handlePresent(ctx, rel, le, re, base)
             le != null -> {
                 if (base == null) {
-                    val lh = local.hash(rel) ?: throw Exception("本地文件不可读")
-                    uploadNew(ctx, rel, le, lh)
+                    uploadNew(ctx, rel, le)
                 } else {
                     ctx.warnings++
                     log("注意: 服务器已不存在，本地保留（不传播删除）: $rel")
@@ -122,7 +127,7 @@ class SyncEngine(
     }
 
     private suspend fun handlePresent(ctx: Ctx, rel: String, le: LocalEntry, re: RemoteFile, base: StateEntry?) {
-        val lh = local.hash(rel) ?: throw Exception("本地文件不可读")
+        val lh = local.hash(le) ?: throw Exception("本地文件不可读")
         // 决策入口：两端内容一致 → 无论基线是什么状态都直接收敛（自愈过期/损坏的基线）
         if (lh == re.sha256) {
             ctx.record(rel, lh, le.size)
@@ -141,10 +146,12 @@ class SyncEngine(
         val serverChanged = re.sha256 != b.sha256
         when {
             localChanged && !serverChanged -> {
-                val data = local.read(rel) ?: throw Exception("本地文件不可读")
+                // 基线哈希必须与实际上传的字节同源，否则下次同步永远判不一致
+                val data = local.read(le) ?: throw Exception("本地文件不可读")
+                val sum = sha256Hex(data)
                 when (server.put(rel, data, true, b.sha256)) {
                     PutStatus.CREATED -> {
-                        ctx.record(rel, lh, le.size)
+                        ctx.record(rel, sum, data.size.toLong())
                         ctx.uploaded++
                         log("上传 $rel")
                     }
@@ -164,11 +171,12 @@ class SyncEngine(
         }
     }
 
-    private fun uploadNew(ctx: Ctx, rel: String, le: LocalEntry, lh: String) {
-        val data = local.read(rel) ?: throw Exception("本地文件不可读")
+    private fun uploadNew(ctx: Ctx, rel: String, le: LocalEntry) {
+        val data = local.read(le) ?: throw Exception("本地文件不可读")
+        val sum = sha256Hex(data)
         when (server.put(rel, data, false, null)) {
             PutStatus.CREATED -> {
-                ctx.record(rel, lh, le.size)
+                ctx.record(rel, sum, data.size.toLong())
                 ctx.uploaded++
                 log("上传 $rel")
             }
@@ -190,9 +198,9 @@ class SyncEngine(
         ctx.save()
         when (ask(ConflictInfo(rel, le.size, lh, re.size, re.sha256, re.modTime))) {
             "local" -> {
-                val data = local.read(rel) ?: throw Exception("本地文件不可读")
+                val data = local.read(le) ?: throw Exception("本地文件不可读")
                 if (server.put(rel, data, true, null) != PutStatus.CREATED) throw Exception("上传被拒绝")
-                ctx.record(rel, lh, le.size)
+                ctx.record(rel, sha256Hex(data), data.size.toLong())
                 ctx.resolved++
                 log("冲突解决(保留本地) $rel")
             }
