@@ -1,5 +1,6 @@
 package com.filesync.app
 
+import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
@@ -13,6 +14,7 @@ import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.BackEventCompat
 import androidx.activity.compose.PredictiveBackHandler
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -128,6 +130,8 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.documentfile.provider.DocumentFile
 import com.filesync.app.api.HttpServerApi
 import com.filesync.app.api.PutStatus
@@ -251,7 +255,7 @@ class AppModel(val context: Context) {
         if (manual) manualCheckResult = null
         modelScope.launch {
             val info = try {
-                withContext(Dispatchers.IO) { Updater.check(currentVersion()) }
+                withContext(Dispatchers.IO) { Updater.check(currentVersion(), serverUrl, token.trim()) }
             } catch (e: Exception) {
                 manualChecking = false
                 if (manual) updateErr = "检查失败: ${e.message}"
@@ -592,6 +596,8 @@ class AppModel(val context: Context) {
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Android 15 (targetSdk 35) 强制 edge-to-edge：透明状态栏 + 显式控制图标明暗
+        enableEdgeToEdge()
         applyConfigIntent(intent)
         setContent { FileSyncApp() }
     }
@@ -737,6 +743,16 @@ fun FileSyncApp() {
 private fun FileSyncTheme(useDynamicColor: Boolean, content: @Composable () -> Unit) {
     val dark = isSystemInDarkTheme()
     val ctx = LocalContext.current
+    // 亮色主题 → 状态栏深色图标；暗色主题 → 白色图标。
+    // Android 15 (targetSdk 35) 强制 edge-to-edge 后图标明暗必须显式设置，
+    // 否则默认白色图标在亮色背景上完全看不清
+    (ctx as? Activity)?.window?.let { w ->
+        DisposableEffect(dark) {
+            val controller = WindowCompat.getInsetsController(w, w.decorView)
+            controller.isAppearanceLightStatusBars = !dark
+            onDispose { }
+        }
+    }
     val scheme = when {
         useDynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->
             if (dark) dynamicDarkColorScheme(ctx) else dynamicLightColorScheme(ctx)

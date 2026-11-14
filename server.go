@@ -20,6 +20,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -79,6 +80,8 @@ func (s *Server) Handler() http.Handler {
 			s.handlePut(w, r)
 		case r.URL.Path == "/api/delete" && r.Method == http.MethodDelete:
 			s.handleDelete(w, r)
+		case r.URL.Path == "/api/update-check" && r.Method == http.MethodGet:
+			s.handleUpdateCheck(w, r)
 		default:
 			writeError(w, http.StatusNotFound, "未知接口")
 		}
@@ -384,6 +387,51 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("DELETE %s <- %s", wire, r.RemoteAddr)
 	writeJSON(w, http.StatusOK, map[string]any{"path": wire, "deleted": true})
+}
+
+// updateCache 缓存 GitHub 最新 Release（15 分钟）：手机网络的共享出口 IP 极易触发
+// GitHub 未认证限流（403），由服务器独立 IP 代拉并转发给客户端。
+var updateCache = struct {
+	sync.Mutex
+	at   time.Time
+	body []byte
+}{}
+
+// handleUpdateCheck 转发 GitHub 最新 Release 信息（带缓存）。
+func (s *Server) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
+	updateCache.Lock()
+	defer updateCache.Unlock()
+	if updateCache.body == nil || time.Since(updateCache.at) > 15*time.Minute {
+		req, err := http.NewRequest(http.MethodGet,
+			"https://api.github.com/repos/miunerofrade/FileSync/releases/latest", nil)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		req.Header.Set("Accept", "application/vnd.github+json")
+		req.Header.Set("User-Agent", "FileSync-Server")
+		client := &http.Client{Timeout: 15 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "上游请求失败: "+err.Error())
+			return
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "读取上游失败: "+err.Error())
+			return
+		}
+		if resp.StatusCode != http.StatusOK {
+			writeError(w, http.StatusBadGateway, "上游状态 "+resp.Status)
+			return
+		}
+		updateCache.body = body
+		updateCache.at = time.Now()
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(updateCache.body)
 }
 
 func writeError(w http.ResponseWriter, code int, msg string) {

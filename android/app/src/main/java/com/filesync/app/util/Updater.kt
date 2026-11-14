@@ -37,18 +37,17 @@ object Updater {
     }
 
     /**
-     * 查询最新 Release。已是最新返回 null；网络/解析失败抛异常（调用方区分展示）。
+     * 查询最新 Release。已是最新返回 null；失败抛异常（调用方区分展示）。
+     * 优先走自有服务端代理（手机共享网络对 GitHub API 极易 403 限流），
+     * 服务端无此接口（旧版本）或失败时回退直连 GitHub。
      */
-    fun check(currentVersion: String): Info? {
-        val c = URL(API).openConnection() as HttpURLConnection
-        c.connectTimeout = 8000
-        c.readTimeout = 8000
-        c.setRequestProperty("Accept", "application/vnd.github+json")
-        c.setRequestProperty("User-Agent", "FileSync-App")
-        if (c.responseCode != 200) {
-            throw RuntimeException("GitHub API HTTP ${c.responseCode}")
-        }
-        val o = JSONObject(c.inputStream.use { it.readBytes() }.toString(Charsets.UTF_8))
+    fun check(currentVersion: String, serverUrl: String, token: String): Info? {
+        val body = try {
+            httpGet("$serverUrl/api/update-check", token)
+        } catch (_: Exception) {
+            null
+        } ?: httpGet(API, null)
+        val o = JSONObject(body)
         val tag = o.optString("tag_name")
         if (!isNewer(tag, currentVersion)) return null
         val assets = o.optJSONArray("assets") ?: throw RuntimeException("Release 无附件")
@@ -63,6 +62,21 @@ object Updater {
         if (apkUrl.isEmpty()) throw RuntimeException("Release 无 APK 附件")
         val notes = o.optString("body").take(400)
         return Info(tag, apkUrl, notes)
+    }
+
+    private fun httpGet(url: String, token: String?): String {
+        val c = URL(url).openConnection() as HttpURLConnection
+        c.connectTimeout = 8000
+        c.readTimeout = 8000
+        c.setRequestProperty("Accept", "application/vnd.github+json")
+        c.setRequestProperty("User-Agent", "FileSync-App")
+        if (!token.isNullOrBlank()) {
+            c.setRequestProperty("Authorization", "Bearer $token")
+        }
+        if (c.responseCode != 200) {
+            throw RuntimeException("HTTP ${c.responseCode}")
+        }
+        return c.inputStream.use { it.readBytes().toString(Charsets.UTF_8) }
     }
 
     /** 下载 APK（进度 0-100），失败返回 null。 */
