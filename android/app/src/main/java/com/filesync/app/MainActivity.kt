@@ -61,6 +61,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Refresh
@@ -69,6 +72,9 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
@@ -142,6 +148,7 @@ import io.noties.markwon.ext.tasklist.TaskListPlugin
 import io.noties.markwon.html.HtmlPlugin
 import io.noties.markwon.linkify.LinkifyPlugin
 import org.commonmark.node.Paragraph
+import org.json.JSONArray
 import java.io.File
 import kotlin.math.max
 import kotlin.math.min
@@ -179,6 +186,9 @@ private fun Modifier.fileSharedBounds(key: String): Modifier {
 }
 
 class ConflictPrompt(val info: ConflictInfo, val onChoice: (String) -> Unit)
+
+/** 同步方案：一组"本机目录 + 云端分组"。基线按 目录+分组 独立存储，方案间互不干扰。 */
+data class Profile(val id: String, val name: String, val treeUri: String?, val subDir: String)
 
 class AppModel(val context: Context) {
     private val prefs = context.getSharedPreferences("filesync", Context.MODE_PRIVATE)
@@ -273,6 +283,126 @@ class AppModel(val context: Context) {
         }
     }
 
+    // ---------- 同步方案（多目录多分组） ----------
+
+    var profiles = mutableStateListOf<Profile>()
+    var currentId by mutableStateOf<String?>(null)
+
+    fun currentProfile(): Profile? = profiles.firstOrNull { it.id == currentId }
+
+    /** 从 prefs 载入方案列表；旧版单目录配置自动迁移为一个方案。 */
+    private fun loadProfiles() {
+        val raw = prefs.getString("profiles", null)
+        if (raw != null) {
+            try {
+                val arr = JSONArray(raw)
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    profiles.add(
+                        Profile(
+                            o.getString("id"),
+                            o.getString("name"),
+                            o.optString("treeUri").takeIf { it.isNotEmpty() },
+                            o.optString("subdir"),
+                        ),
+                    )
+                }
+            } catch (_: Exception) {
+            }
+        } else if (treeUri != null) {
+            // 旧版迁移：现有 目录+分组 → 第一个方案
+            val name = try {
+                DocumentFile.fromTreeUri(context, Uri.parse(treeUri!!))?.name ?: "同步目录"
+            } catch (_: Exception) {
+                "同步目录"
+            }
+            profiles.add(
+                Profile(
+                    java.util.UUID.randomUUID().toString(),
+                    name,
+                    treeUri,
+                    prefs.getString("subdir", "") ?: "",
+                ),
+            )
+        }
+        currentId = prefs.getString("currentProfileId", null)
+            ?.takeIf { id -> profiles.any { it.id == id } }
+            ?: profiles.firstOrNull()?.id
+        // 把当前方案同步进旧字段（api()/stateStore() 等沿用）
+        currentProfile()?.let { p ->
+            treeUri = p.treeUri
+            subDir = p.subDir
+        }
+    }
+
+    fun saveProfiles() {
+        val arr = JSONArray()
+        profiles.forEach { p ->
+            arr.put(
+                JSONObject()
+                    .put("id", p.id)
+                    .put("name", p.name)
+                    .put("treeUri", p.treeUri ?: "")
+                    .put("subdir", p.subDir),
+            )
+        }
+        prefs.edit()
+            .putString("profiles", arr.toString())
+            .putString("currentProfileId", currentId)
+            .commit()
+    }
+
+    fun switchProfile(id: String) {
+        val p = profiles.firstOrNull { it.id == id } ?: return
+        currentId = id
+        treeUri = p.treeUri
+        subDir = p.subDir
+        mainDir = ""
+        selected = emptySet()
+        refreshTick++
+        saveProfiles()
+    }
+
+    /** 新增方案（目录未选），设为当前；随后在设置页为其选择同步目录。 */
+    fun addProfile() {
+        profiles.add(Profile(java.util.UUID.randomUUID().toString(), "方案 ${profiles.size + 1}", null, ""))
+        currentId = profiles.last().id
+        treeUri = null
+        subDir = ""
+        mainDir = ""
+        selected = emptySet()
+        saveProfiles()
+        refreshTick++
+    }
+
+    fun deleteCurrentProfile() {
+        val cur = currentProfile() ?: return
+        if (profiles.size <= 1) return
+        profiles.remove(cur)
+        currentId = profiles.firstOrNull()?.id
+        currentProfile()?.let { p ->
+            treeUri = p.treeUri
+            subDir = p.subDir
+        }
+        mainDir = ""
+        selected = emptySet()
+        saveProfiles()
+        refreshTick++
+    }
+
+    fun updateCurrentProfile(transform: (Profile) -> Profile) {
+        val cur = currentProfile() ?: return
+        val idx = profiles.indexOfFirst { it.id == cur.id }
+        if (idx >= 0) {
+            profiles[idx] = transform(profiles[idx])
+            saveProfiles()
+        }
+    }
+
+    init {
+        loadProfiles()
+    }
+
     /** host 可直接填完整 URL（https://IP:8443）；不带协议头时自动按 HTTPS 处理。 */
     val serverUrl: String
         get() {
@@ -305,12 +435,24 @@ class AppModel(val context: Context) {
         } catch (_: Exception) {
         }
         treeUri = uri.toString()
-        // 换同步目录时重置基线与子目录绑定（新目录是新同步组）
-        prefs.edit()
-            .putString("treeUri", treeUri)
-            .putString("subdir", "")
-            .putString("state:${treeUri ?: ""}:", "")
-            .commit()
+        // 目录写入当前方案。不再重置分组/基线：基线按"目录+分组"独立存储，
+        // 新组合天然是空基线（首次同步自动按内容对齐），旧组合切回时基线还在
+        val name = try {
+            DocumentFile.fromTreeUri(context, uri)?.name ?: "同步目录"
+        } catch (_: Exception) {
+            "同步目录"
+        }
+        val cur = currentProfile()
+        if (cur == null) {
+            profiles.add(Profile(java.util.UUID.randomUUID().toString(), name, treeUri, subDir))
+            currentId = profiles.last().id
+        } else {
+            updateCurrentProfile { p ->
+                // 首次为方案选目录时用目录名作为方案名
+                p.copy(treeUri = treeUri, name = p.treeUri?.let { p.name } ?: name)
+            }
+        }
+        saveProfiles()
         screen = Screen.Main
         mainDir = ""
         selected = emptySet()
@@ -639,17 +781,71 @@ private fun MainScreen(model: AppModel) {
         topBar = {
             TopAppBar(
                 title = {
-                    Column {
-                        Text(
-                            if (model.mainDir.isEmpty()) "FileSync"
-                            else model.mainDir.substringAfterLast('/'),
-                        )
-                        // 当前分组始终可见，避免"在往哪个组同步"产生歧义
-                        Text(
-                            "云端分组: " + model.subDir.trim().ifEmpty { "（根目录）" },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                    // 左上角 = 同步方案切换器：当前方案名 + 分组，点击弹方案列表
+                    var menuOpen by remember { mutableStateOf(false) }
+                    val cur = model.currentProfile()
+                    Box {
+                        Row(
+                            Modifier
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable { menuOpen = true }
+                                .padding(horizontal = 4.dp, vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column {
+                                Text(
+                                    if (model.mainDir.isEmpty()) {
+                                        cur?.name ?: "FileSync"
+                                    } else {
+                                        model.mainDir.substringAfterLast('/')
+                                    },
+                                )
+                                // 当前分组始终可见，避免"在往哪个组同步"产生歧义
+                                Text(
+                                    "云端分组: " + model.subDir.trim().ifEmpty { "（根目录）" },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Icon(Icons.Default.ArrowDropDown, contentDescription = "切换同步方案")
+                        }
+                        DropdownMenu(
+                            expanded = menuOpen,
+                            onDismissRequest = { menuOpen = false },
+                        ) {
+                            model.profiles.forEach { p ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Column {
+                                            Text(p.name + (p.treeUri?.let { "" } ?: "（未选目录）"))
+                                            // 同名方案靠分组区分
+                                            Text(
+                                                "云端分组: " + p.subDir.trim().ifEmpty { "（根目录）" },
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                        }
+                                    },
+                                    trailingIcon = {
+                                        if (p.id == model.currentId) {
+                                            Icon(Icons.Default.Check, contentDescription = null)
+                                        }
+                                    },
+                                    onClick = {
+                                        menuOpen = false
+                                        model.switchProfile(p.id)
+                                    },
+                                )
+                            }
+                            HorizontalDivider()
+                            DropdownMenuItem(
+                                text = { Text("管理方案（设置）") },
+                                onClick = {
+                                    menuOpen = false
+                                    model.screen = Screen.Settings
+                                },
+                            )
+                        }
                     }
                 },
                 navigationIcon = {
@@ -981,6 +1177,7 @@ private fun SettingsScreen(model: AppModel) {
     var testResult by remember { mutableStateOf<String?>(null) }
     var testing by remember { mutableStateOf(false) }
     var confirmReset by remember { mutableStateOf(false) }
+    var confirmDeleteProfile by remember { mutableStateOf(false) }
     var showGroupInfo by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
@@ -1078,7 +1275,11 @@ private fun SettingsScreen(model: AppModel) {
             SectionHeader("同步")
             OutlinedTextField(
                 value = model.subDir,
-                onValueChange = { model.subDir = it; model.saveSettings() },
+                onValueChange = {
+                    model.subDir = it
+                    model.updateCurrentProfile { p -> p.copy(subDir = it.trim()) }
+                    model.saveSettings()
+                },
                 label = { Text("云端子目录（可选，同步组）") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
@@ -1096,10 +1297,21 @@ private fun SettingsScreen(model: AppModel) {
             ListItem(
                 headlineContent = { Text(if (model.treeUri == null) "选择同步目录" else "同步目录") },
                 supportingContent = {
-                    Text(dirName ?: "点击选择（SAF，权限持久化）")
+                    Text(
+                        dirName ?: "点击选择（SAF，权限持久化）",
+                    )
                 },
                 trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null) },
                 modifier = Modifier.clickable { picker.launch(null) },
+            )
+            ListItem(
+                headlineContent = { Text("添加方案") },
+                supportingContent = { Text("新建一组 本机目录 + 云端分组，互不干扰") },
+                trailingContent = { Icon(Icons.Default.Add, contentDescription = null) },
+                modifier = Modifier.clickable {
+                    model.addProfile()
+                    picker.launch(null) // 新方案立即选目录
+                },
             )
             if (model.treeUri != null) {
                 ListItem(
@@ -1113,6 +1325,20 @@ private fun SettingsScreen(model: AppModel) {
                         )
                     },
                     modifier = Modifier.clickable { confirmReset = true },
+                )
+            }
+            if (model.profiles.size > 1) {
+                ListItem(
+                    headlineContent = {
+                        Text("删除当前方案", color = MaterialTheme.colorScheme.error)
+                    },
+                    supportingContent = {
+                        Text(
+                            "移除\"${model.currentProfile()?.name}\"（云端与本机文件均不受影响）",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    },
+                    modifier = Modifier.clickable { confirmDeleteProfile = true },
                 )
             }
             SectionHeader("外观")
@@ -1183,6 +1409,25 @@ private fun SettingsScreen(model: AppModel) {
                 )
             },
             confirmButton = { TextButton({ showGroupInfo = false }) { Text("知道了") } },
+        )
+    }
+    if (confirmDeleteProfile) {
+        AlertDialog(
+            onDismissRequest = { confirmDeleteProfile = false },
+            title = { Text("删除当前方案") },
+            text = {
+                Text(
+                    "将移除方案\"${model.currentProfile()?.name}\"（本机目录 + 分组绑定）。\n" +
+                        "云端与本机文件都不会被改动；重新添加方案并选回目录即可恢复。",
+                )
+            },
+            confirmButton = {
+                TextButton({
+                    confirmDeleteProfile = false
+                    model.deleteCurrentProfile()
+                }) { Text("删除") }
+            },
+            dismissButton = { TextButton({ confirmDeleteProfile = false }) { Text("取消") } },
         )
     }
     if (confirmReset) {
