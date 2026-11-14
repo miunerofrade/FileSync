@@ -38,6 +38,8 @@ class FakeServer : ServerApi {
 
     override fun ping() = true
 
+    override fun probe() = true to "ok"
+
     override fun ls(prefix: String) = files.entries
         .filter { it.key.startsWith(prefix) }
         .map { RemoteFile(it.key, it.value.size.toLong(), sha256Hex(it.value), "") }

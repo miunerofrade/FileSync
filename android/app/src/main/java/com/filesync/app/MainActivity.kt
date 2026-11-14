@@ -131,6 +131,12 @@ class AppModel(val context: Context) {
     private val prefs = context.getSharedPreferences("filesync", Context.MODE_PRIVATE)
 
     var screen by mutableStateOf<Screen>(Screen.Main)
+
+    // 主屏浏览状态放 Model：进预览/设置再返回时不丢失（remember 局部状态会随页面销毁重置）
+    var mainDir by mutableStateOf("")
+    var viewMode by mutableStateOf("local")
+    var selected by mutableStateOf<Set<String>>(emptySet())
+
     var host by mutableStateOf(prefs.getString("host", "127.0.0.1") ?: "127.0.0.1")
     var port by mutableStateOf(prefs.getString("port", "8080") ?: "8080")
     var token by mutableStateOf(prefs.getString("token", "") ?: "")
@@ -183,6 +189,8 @@ class AppModel(val context: Context) {
             .putString("state:${treeUri ?: ""}", "")
             .commit()
         screen = Screen.Main
+        mainDir = ""
+        selected = emptySet()
     }
 
     fun localFiles(): SafFiles = SafFiles(context, Uri.parse(treeUri))
@@ -305,12 +313,18 @@ fun FileSyncApp() {
     val model = remember { AppModel(ctx.applicationContext) }
     FileSyncTheme(useDynamicColor = model.dynamicColor) {
         Surface(Modifier.fillMaxSize()) {
-            // 预测性返回（官方模式）：跟手收集进度 → 提交导航 / 取消复位
-            PredictiveBackHandler(enabled = model.screen != Screen.Main) { backEvent ->
+            // 预测性返回（官方模式）：跟手收集进度 → 提交导航 / 取消复位。
+            // 返回目标：预览/设置 → 主屏；主屏在子目录内 → 上一级；主屏根目录 → 无处理（系统退出）
+            val canGoBack = model.screen != Screen.Main || model.mainDir.isNotEmpty()
+            PredictiveBackHandler(enabled = canGoBack) { backEvent ->
                 try {
                     backEvent.collect { e -> model.backProgress = e.progress }
-                    model.screen = Screen.Main
                     model.backProgress = 0f
+                    if (model.screen != Screen.Main) {
+                        model.screen = Screen.Main
+                    } else {
+                        model.mainDir = parentDir(model.mainDir)
+                    }
                 } catch (_: CancellationException) {
                     model.backProgress = 0f
                 }
@@ -371,10 +385,7 @@ private fun FileSyncTheme(useDynamicColor: Boolean, content: @Composable () -> U
 @Composable
 private fun MainScreen(model: AppModel) {
     val scope = rememberCoroutineScope()
-    var dir by remember { mutableStateOf("") }
-    var entries by remember(dir) { mutableStateOf<List<DirEntry>?>(null) }
-    var selected by remember { mutableStateOf(setOf<String>()) }
-    var viewMode by remember { mutableStateOf("local") }
+    var entries by remember(model.mainDir) { mutableStateOf<List<DirEntry>?>(null) }
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner, model.treeUri) {
         val obs = LifecycleEventObserver { _, event ->
@@ -384,21 +395,21 @@ private fun MainScreen(model: AppModel) {
         onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
     }
     var cloudList by remember { mutableStateOf<List<RemoteFile>?>(null) }
-    LaunchedEffect(dir, model.refreshTick, model.treeUri) {
+    LaunchedEffect(model.mainDir, model.refreshTick, model.treeUri) {
         entries = if (model.treeUri == null) {
             null
         } else {
             withContext(Dispatchers.IO) {
                 try {
-                    model.localFiles().listDir(dir)
+                    model.localFiles().listDir(model.mainDir)
                 } catch (_: Exception) {
                     null
                 }
             }
         }
     }
-    LaunchedEffect(viewMode, model.refreshTick, model.treeUri) {
-        if (viewMode == "cloud" && model.treeUri != null) {
+    LaunchedEffect(model.viewMode, model.refreshTick, model.treeUri) {
+        if (model.viewMode == "cloud" && model.treeUri != null) {
             cloudList = withContext(Dispatchers.IO) {
                 runCatching { model.api().ls("") }.getOrNull()
             }
@@ -407,10 +418,15 @@ private fun MainScreen(model: AppModel) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(if (dir.isEmpty()) "FileSync" else dir.substringAfterLast('/')) },
+                title = {
+                    Text(
+                        if (model.mainDir.isEmpty()) "FileSync"
+                        else model.mainDir.substringAfterLast('/'),
+                    )
+                },
                 navigationIcon = {
-                    if (dir.isNotEmpty()) {
-                        IconButton(onClick = { dir = parentDir(dir) }) {
+                    if (model.mainDir.isNotEmpty()) {
+                        IconButton(onClick = { model.mainDir = parentDir(model.mainDir) }) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, null)
                         }
                     }
@@ -460,16 +476,16 @@ private fun MainScreen(model: AppModel) {
                 )
             }
             AnimatedVisibility(
-                visible = selected.isNotEmpty() && viewMode == "local",
+                visible = model.selected.isNotEmpty() && model.viewMode == "local",
                 enter = expandVertically() + fadeIn(),
                 exit = shrinkVertically() + fadeOut(),
             ) {
                 Button(
                     onClick = {
-                        val sel = selected
+                        val sel = model.selected
                         scope.launch {
                             model.runSync { p -> sel.any { s -> p == s || p.startsWith("$s/") } }
-                            selected = emptySet()
+                            model.selected = emptySet()
                         }
                     },
                     enabled = !model.busy,
@@ -477,28 +493,39 @@ private fun MainScreen(model: AppModel) {
                         .fillMaxWidth()
                         .padding(horizontal = 16.dp, vertical = 4.dp)
                         .height(44.dp),
-                ) { Text("同步选中 (${selected.size})") }
+                ) { Text("同步选中 (${model.selected.size})") }
             }
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                FilterChip(selected = viewMode == "local", onClick = { viewMode = "local" }, label = { Text("本地") })
-                FilterChip(selected = viewMode == "cloud", onClick = { viewMode = "cloud" }, label = { Text("云端") })
-                if (viewMode == "local") {
+                FilterChip(
+                    selected = model.viewMode == "local",
+                    onClick = { model.viewMode = "local" },
+                    label = { Text("本地") },
+                )
+                FilterChip(
+                    selected = model.viewMode == "cloud",
+                    onClick = { model.viewMode = "cloud" },
+                    label = { Text("云端") },
+                )
+                if (model.viewMode == "local") {
                     Spacer(Modifier.weight(1f))
-                    val curFiles = (entries ?: emptyList()).filter { !it.isDir }.map { joinDir(dir, it.name) }
-                    val allSel = curFiles.isNotEmpty() && curFiles.all { it in selected }
+                    val curFiles = (entries ?: emptyList()).filter { !it.isDir }
+                        .map { joinDir(model.mainDir, it.name) }
+                    val allSel = curFiles.isNotEmpty() && curFiles.all { it in model.selected }
                     TextButton(
                         onClick = {
-                            selected = if (allSel) selected - curFiles.toSet() else selected + curFiles.toSet()
+                            model.selected =
+                                if (allSel) model.selected - curFiles.toSet()
+                                else model.selected + curFiles.toSet()
                         },
                         enabled = curFiles.isNotEmpty(),
                     ) { Text(if (allSel) "取消全选" else "全选") }
                 }
             }
-            if (viewMode == "cloud") {
+            if (model.viewMode == "cloud") {
                 CloudFileList(
                     model = model,
                     refreshTick = model.refreshTick,
@@ -514,19 +541,20 @@ private fun MainScreen(model: AppModel) {
                 ) { CircularProgressIndicator() }
                 else -> LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
                     items(e) { en ->
-                        val rel = joinDir(dir, en.name)
+                        val rel = joinDir(model.mainDir, en.name)
                         if (en.isDir) {
                             Row(
                                 Modifier
                                     .fillMaxWidth()
-                                    .clickable { dir = rel }
+                                    .clickable { model.mainDir = rel }
                                     .padding(horizontal = 8.dp, vertical = 2.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 Checkbox(
-                                    checked = rel in selected,
+                                    checked = rel in model.selected,
                                     onCheckedChange = { on ->
-                                        selected = if (on) selected + rel else selected - rel
+                                        model.selected =
+                                            if (on) model.selected + rel else model.selected - rel
                                     },
                                 )
                                 Text("▸ ", color = MaterialTheme.colorScheme.primary)
@@ -541,9 +569,10 @@ private fun MainScreen(model: AppModel) {
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 Checkbox(
-                                    checked = rel in selected,
+                                    checked = rel in model.selected,
                                     onCheckedChange = { on ->
-                                        selected = if (on) selected + rel else selected - rel
+                                        model.selected =
+                                            if (on) model.selected + rel else model.selected - rel
                                     },
                                 )
                                 Column(Modifier.weight(1f)) {
