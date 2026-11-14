@@ -25,6 +25,7 @@ import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
@@ -785,6 +786,10 @@ private fun MainScreen(model: AppModel) {
                     var menuOpen by remember { mutableStateOf(false) }
                     val cur = model.currentProfile()
                     Box {
+                        val caretRot by animateFloatAsState(
+                            if (menuOpen) 180f else 0f,
+                            label = "caret",
+                        )
                         Row(
                             Modifier
                                 .clip(RoundedCornerShape(10.dp))
@@ -807,18 +812,37 @@ private fun MainScreen(model: AppModel) {
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
-                            Icon(Icons.Default.ArrowDropDown, contentDescription = "切换同步方案")
+                            Icon(
+                                Icons.Default.ArrowDropDown,
+                                contentDescription = "切换同步方案",
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.graphicsLayer { rotationZ = caretRot },
+                            )
                         }
                         DropdownMenu(
                             expanded = menuOpen,
                             onDismissRequest = { menuOpen = false },
+                            // M3 Menu 规范：容器 surfaceContainer + extra-small 形状 + 色调层级
+                            shape = MaterialTheme.shapes.extraSmall,
+                            containerColor = MaterialTheme.colorScheme.surfaceContainer,
+                            tonalElevation = 3.dp,
+                            shadowElevation = 8.dp,
                         ) {
                             model.profiles.forEach { p ->
+                                val selected = p.id == model.currentId
                                 DropdownMenuItem(
                                     text = {
                                         Column {
-                                            Text(p.name + (p.treeUri?.let { "" } ?: "（未选目录）"))
-                                            // 同名方案靠分组区分
+                                            Text(
+                                                p.name + (p.treeUri?.let { "" } ?: "（未选目录）"),
+                                                style = MaterialTheme.typography.labelLarge,
+                                                color = if (selected) {
+                                                    MaterialTheme.colorScheme.primary
+                                                } else {
+                                                    MaterialTheme.colorScheme.onSurface
+                                                },
+                                            )
+                                            // 同名方案靠分组副文本区分
                                             Text(
                                                 "云端分组: " + p.subDir.trim().ifEmpty { "（根目录）" },
                                                 style = MaterialTheme.typography.bodySmall,
@@ -826,9 +850,15 @@ private fun MainScreen(model: AppModel) {
                                             )
                                         }
                                     },
-                                    trailingIcon = {
-                                        if (p.id == model.currentId) {
-                                            Icon(Icons.Default.Check, contentDescription = null)
+                                    leadingIcon = {
+                                        if (selected) {
+                                            Icon(
+                                                Icons.Default.Check,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.primary,
+                                            )
+                                        } else {
+                                            Spacer(Modifier.width(24.dp)) // 未选中占位，保持文字对齐
                                         }
                                     },
                                     onClick = {
@@ -837,9 +867,22 @@ private fun MainScreen(model: AppModel) {
                                     },
                                 )
                             }
-                            HorizontalDivider()
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                             DropdownMenuItem(
-                                text = { Text("管理方案（设置）") },
+                                text = {
+                                    Text(
+                                        "管理方案（设置）",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Default.Settings,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                },
                                 onClick = {
                                     menuOpen = false
                                     model.screen = Screen.Settings
