@@ -256,7 +256,7 @@ class AppModel(val context: Context) {
         if (manual) manualCheckResult = null
         modelScope.launch {
             val info = try {
-                withContext(Dispatchers.IO) { Updater.check(currentVersion(), serverUrl, token.trim()) }
+                withContext(Dispatchers.IO) { Updater.check(currentVersion(), serverUrl, token.trim(), manual) }
             } catch (e: Exception) {
                 manualChecking = false
                 if (manual) updateErr = "检查失败: ${e.message}"

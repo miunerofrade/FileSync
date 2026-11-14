@@ -40,10 +40,11 @@ object Updater {
      * 查询最新 Release。已是最新返回 null；失败抛异常（调用方区分展示）。
      * 优先走自有服务端代理（手机共享网络对 GitHub API 极易 403 限流），
      * 服务端无此接口（旧版本）或失败时回退直连 GitHub。
+     * refresh=true 强制服务端绕过缓存（手动检查用）。
      */
-    fun check(currentVersion: String, serverUrl: String, token: String): Info? {
+    fun check(currentVersion: String, serverUrl: String, token: String, refresh: Boolean): Info? {
         val body = try {
-            httpGet("$serverUrl/api/update-check", token)
+            httpGet("$serverUrl/api/update-check" + if (refresh) "?refresh=1" else "", token)
         } catch (_: Exception) {
             null
         } ?: httpGet(API, null)

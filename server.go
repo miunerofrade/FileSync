@@ -398,10 +398,13 @@ var updateCache = struct {
 }{}
 
 // handleUpdateCheck 转发 GitHub 最新 Release 信息（带缓存）。
+// refresh=1 强制绕过缓存拉取上游：App 手动"检查更新"时携带，避免发布后 15 分钟内
+// 客户端拿到旧缓存而误报"已是最新"。
 func (s *Server) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
+	force := r.URL.Query().Get("refresh") == "1"
 	updateCache.Lock()
 	defer updateCache.Unlock()
-	if updateCache.body == nil || time.Since(updateCache.at) > 15*time.Minute {
+	if force || updateCache.body == nil || time.Since(updateCache.at) > 15*time.Minute {
 		req, err := http.NewRequest(http.MethodGet,
 			"https://api.github.com/repos/miunerofrade/FileSync/releases/latest", nil)
 		if err != nil {
