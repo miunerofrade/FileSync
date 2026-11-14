@@ -13,9 +13,10 @@ const usage = `FileSync —— 轻量级、中心化、手动触发的文件同�
   filesync serve [--addr 127.0.0.1:8080] [--data-dir data]
       启动文件服务端。数据目录缺省为运行目录下的 ./data，不存在时自动创建。
 
-  filesync init [--server http://127.0.0.1:8080] [--subdir 分组] [目录]
+  filesync init [--server http://127.0.0.1:8080] [--subdir 分组] [--config 配置文件] [目录]
       初始化同步目录（缺省当前目录），写入 .filesync.json 保存服务端地址与同步基线。
       已初始化的目录加 --force 可修改分组/服务器（基线清空，本地文件不动）。
+      --config 读取 JSON 配置（server/token/subdir，App 可导出）：字段有则覆盖、无则保留对应 -- 参数。
 
   filesync sync [--keep local|remote] [相对路径]
       双向同步整个目录；给定相对路径（相对同步根目录）时只同步该文件或子目录。

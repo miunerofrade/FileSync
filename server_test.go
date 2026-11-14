@@ -60,6 +60,26 @@ func TestNoTokenServerAllowsAll(t *testing.T) {
 	}
 }
 
+func TestReadClientConfig(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "cfg.json")
+	_ = os.WriteFile(p, []byte(`{"server":"https://1.2.3.4:8443","token":"abc"}`), 0o600)
+	s, tok, sub, err := readClientConfig(p)
+	if err != nil || s != "https://1.2.3.4:8443" || tok != "abc" || sub != "" {
+		t.Errorf("缺 subdir 应返回空串: %v %q %q %q", err, s, tok, sub)
+	}
+
+	_ = os.WriteFile(p, []byte(`{"token":"abc","subdir":"notes"}`), 0o600)
+	s, tok, sub, err = readClientConfig(p)
+	if err != nil || s != "" || tok != "abc" || sub != "notes" {
+		t.Errorf("缺 server 应返回空串: %v %q %q %q", err, s, tok, sub)
+	}
+
+	_ = os.WriteFile(p, []byte(`{bad json`), 0o600)
+	if _, _, _, err = readClientConfig(p); err == nil {
+		t.Errorf("坏 JSON 应报错")
+	}
+}
+
 func TestDeleteEndpoint(t *testing.T) {
 	srv, err := NewServer(t.TempDir(), "secret123")
 	if err != nil {

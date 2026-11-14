@@ -16,23 +16,22 @@ import (
 
 // ---------- filesync init ----------
 
-// readClientConfig 读取客户端配置文件（服务端 --client-config 生成）。
-func readClientConfig(path string) (server, token string, err error) {
+// readClientConfig 读取客户端配置文件（App 导出 / 服务端 --client-config 生成）。
+// 字段可缺省：缺的返回空串，由调用方按"文件有的就覆盖，没有的保留 -- 参数"合并。
+func readClientConfig(path string) (server, token, subdir string, err error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	var cfg struct {
 		Server string `json:"server"`
 		Token  string `json:"token"`
+		SubDir string `json:"subdir"`
 	}
 	if err := json.Unmarshal(data, &cfg); err != nil {
-		return "", "", fmt.Errorf("JSON 解析失败: %v", err)
+		return "", "", "", fmt.Errorf("JSON 解析失败: %v", err)
 	}
-	if cfg.Server == "" {
-		return "", "", errors.New("缺少 server 字段")
-	}
-	return strings.TrimSpace(cfg.Server), strings.TrimSpace(cfg.Token), nil
+	return strings.TrimSpace(cfg.Server), strings.TrimSpace(cfg.Token), strings.TrimSpace(cfg.SubDir), nil
 }
 
 func cmdInit(args []string) {
@@ -40,7 +39,7 @@ func cmdInit(args []string) {
 	server := fsSet.String("server", defaultServer, "服务端地址")
 	token := fsSet.String("token", os.Getenv("FILESYNC_TOKEN"), "访问令牌")
 	subdir := fsSet.String("subdir", "", "云端子目录（同步组前缀）")
-	configFile := fsSet.String("config", "", "从配置文件导入（JSON：server/token，覆盖 --server/--token）")
+	configFile := fsSet.String("config", "", "从配置文件导入（JSON：server/token/subdir，字段有则覆盖、无则保留对应 -- 参数）")
 	force := fsSet.Bool("force", false, "已初始化的目录重新初始化：覆盖 server/token/subdir，基线清空，本地文件不动")
 	fsSet.Parse(args)
 	if fsSet.NArg() > 1 {
@@ -51,12 +50,19 @@ func cmdInit(args []string) {
 		dir = fsSet.Arg(0)
 	}
 	if *configFile != "" {
-		s, t, err := readClientConfig(*configFile)
+		s, t, sub, err := readClientConfig(*configFile)
 		if err != nil {
 			fatal("读取配置文件失败: %v", err)
 		}
-		*server = s
-		*token = t
+		if s != "" {
+			*server = s
+		}
+		if t != "" {
+			*token = t
+		}
+		if sub != "" {
+			*subdir = sub
+		}
 	}
 	absDir, err := filepath.Abs(dir)
 	if err != nil {

@@ -999,6 +999,21 @@ private fun SettingsScreen(model: AppModel) {
             }
         }
     }
+    // 导出配置：server/token/subdir 三字段（不含本机同步目录 treeUri），与 CLI --config 兼容
+    val cfgExporter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        if (uri != null) {
+            runCatching {
+                val o = JSONObject()
+                o.put("server", model.serverUrl)
+                o.put("token", model.token.trim())
+                o.put("subdir", model.subDir.trim())
+                model.context.contentResolver.openOutputStream(uri)?.use { os ->
+                    os.write(o.toString(2).toByteArray(Charsets.UTF_8))
+                } ?: return@runCatching
+                model.log("配置已导出")
+            }.onFailure { model.log("导出失败: ${it.message}") }
+        }
+    }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -1139,6 +1154,12 @@ private fun SettingsScreen(model: AppModel) {
                 modifier = Modifier.clickable(enabled = !model.manualChecking) {
                     model.checkUpdate(true)
                 },
+            )
+            ListItem(
+                headlineContent = { Text("导出配置") },
+                supportingContent = { Text("JSON：服务器 / 令牌 / 分组（不含本机同步目录）") },
+                trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null) },
+                modifier = Modifier.clickable { cfgExporter.launch("filesync-client.json") },
             )
             ListItem(
                 headlineContent = { Text("从文件导入配置") },

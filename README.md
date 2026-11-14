@@ -184,6 +184,14 @@ CLI（Token 也可用环境变量 FILESYNC_TOKEN）：
 #   App: 设置页直接改"云端子目录"（基线按分组独立保存，改完直接同步即可）
 ```
 
+**配置文件互通**：App 设置页可"导出配置"（JSON：`server`/`token`/`subdir`，不含本机
+同步目录），服务端也可用 `serve --client-config` 生成。CLI 用 `init --config 文件`
+导入，字段级合并——配置文件里有的覆盖对应 `--` 参数，没有的保留参数值：
+
+```
+./filesync init --config filesync-client.json --subdir pc D:/pc
+```
+
 Android App 设置页：服务器地址填 `https://124.222.6.120:8443`，访问令牌填部署时生成的值。
 App 与 CLI 均使用系统证书库标准验证 TLS（不提供忽略证书错误的选项）。
 
