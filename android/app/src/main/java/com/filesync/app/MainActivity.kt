@@ -53,6 +53,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -203,6 +204,12 @@ class AppModel(val context: Context) {
     var viewMode by mutableStateOf("local")
     var selected by mutableStateOf<Set<String>>(emptySet())
     var cloudSelected by mutableStateOf<Set<String>>(emptySet())
+
+    // 列表滚动位置与条目缓存跨页面保留：预览返回后不再回到顶部；
+    // 仅在 目录/方案 切换（key 变化）时清空并回到顶部
+    val listState = LazyListState()
+    var mainEntries by mutableStateOf<List<DirEntry>?>(null)
+    var mainEntriesKey by mutableStateOf("")
 
     var host by mutableStateOf(prefs.getString("host", "127.0.0.1") ?: "127.0.0.1")
     var port by mutableStateOf(prefs.getString("port", "8080") ?: "8080")
@@ -743,7 +750,6 @@ private fun FileSyncTheme(useDynamicColor: Boolean, content: @Composable () -> U
 @Composable
 private fun MainScreen(model: AppModel) {
     val scope = rememberCoroutineScope()
-    var entries by remember(model.mainDir) { mutableStateOf<List<DirEntry>?>(null) }
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner, model.treeUri) {
         val obs = LifecycleEventObserver { _, event ->
@@ -755,7 +761,14 @@ private fun MainScreen(model: AppModel) {
     var cloudList by remember { mutableStateOf<List<RemoteFile>?>(null) }
     var showBatchDeleteConfirm by remember { mutableStateOf(false) }
     LaunchedEffect(model.mainDir, model.refreshTick, model.treeUri) {
-        entries = if (model.treeUri == null) {
+        val key = "${model.treeUri}|${model.mainDir}"
+        if (model.mainEntriesKey != key) {
+            // 目录/方案切换：清空旧条目并回到顶部；预览/设置返回时 key 未变，位置保留
+            model.mainEntriesKey = key
+            model.mainEntries = null
+            model.listState.scrollToItem(0)
+        }
+        model.mainEntries = if (model.treeUri == null) {
             null
         } else {
             withContext(Dispatchers.IO) {
@@ -1010,7 +1023,7 @@ private fun MainScreen(model: AppModel) {
                 )
                 if (model.viewMode == "local") {
                     Spacer(Modifier.weight(1f))
-                    val curFiles = (entries ?: emptyList()).filter { !it.isDir }
+                    val curFiles = (model.mainEntries ?: emptyList()).filter { !it.isDir }
                         .map { joinDir(model.mainDir, it.name) }
                     val allSel = curFiles.isNotEmpty() && curFiles.all { it in model.selected }
                     TextButton(
@@ -1043,10 +1056,10 @@ private fun MainScreen(model: AppModel) {
                 )
                 return@Column
             }
-            val e = entries
+            val e = model.mainEntries
             when {
                 e == null -> SkeletonList(8, Modifier.weight(1f).fillMaxWidth())
-                else -> LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
+                else -> LazyColumn(state = model.listState, modifier = Modifier.weight(1f).fillMaxWidth()) {
                         items(e) { en ->
                             val rel = joinDir(model.mainDir, en.name)
                             if (en.isDir) {
