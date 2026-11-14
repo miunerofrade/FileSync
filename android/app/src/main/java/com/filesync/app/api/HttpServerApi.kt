@@ -33,7 +33,8 @@ class HttpServerApi(baseUrl: String, private val token: String, subDir: String) 
 
     override fun ping(): Boolean = try {
         open("/api/ping").responseCode == 200
-    } catch (_: Exception) {
+    } catch (e: Exception) {
+        android.util.Log.w("FileSyncPing", "ping $base failed: ${e::class.java.simpleName}: ${e.message}")
         false
     }
 
