@@ -18,6 +18,11 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -37,6 +42,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -55,6 +61,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
@@ -452,6 +459,21 @@ private fun MainScreen(model: AppModel) {
             }
         }
     }
+    // 底部主按钮：一钮三态（全量同步 / 同步选中的 N 个文件 / 删除云端选中的 N 个文件），
+    // 颜色随语义渐变，放底部便于单手触达
+    val deleteMode = model.viewMode == "cloud" && model.cloudSelected.isNotEmpty()
+    val selectionSync = model.viewMode == "local" && model.selected.isNotEmpty()
+    val btnContainer by animateColorAsState(
+        when {
+            deleteMode -> MaterialTheme.colorScheme.errorContainer
+            else -> MaterialTheme.colorScheme.primary
+        },
+        label = "btnContainer",
+    )
+    val btnContent = when {
+        deleteMode -> MaterialTheme.colorScheme.onErrorContainer
+        else -> MaterialTheme.colorScheme.onPrimary
+    }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -483,6 +505,58 @@ private fun MainScreen(model: AppModel) {
                 },
             )
         },
+        bottomBar = {
+            Button(
+                onClick = {
+                    when {
+                        deleteMode -> showBatchDeleteConfirm = true
+                        selectionSync -> {
+                            val sel = model.selected
+                            scope.launch {
+                                model.runSync { p -> sel.any { s -> p == s || p.startsWith("$s/") } }
+                                model.selected = emptySet()
+                            }
+                        }
+                        else -> scope.launch { model.runSync(null) }
+                    }
+                },
+                enabled = !model.busy,
+                colors = ButtonDefaults.buttonColors(containerColor = btnContainer, contentColor = btnContent),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                    .navigationBarsPadding()
+                    .height(52.dp),
+            ) {
+                if (model.busy) {
+                    // 同步进行中：图标持续旋转
+                    val angle = rememberInfiniteTransition(label = "spin")
+                        .animateFloat(
+                            0f, 360f,
+                            infiniteRepeatable(tween(900, easing = LinearEasing)),
+                            label = "angle",
+                        ).value
+                    Icon(
+                        Icons.Default.Refresh, null,
+                        Modifier.graphicsLayer { rotationZ = angle },
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    Text("同步中")
+                } else {
+                    Icon(Icons.Default.Refresh, null)
+                    Spacer(Modifier.width(12.dp))
+                    AnimatedContent(
+                        targetState = when {
+                            deleteMode -> "删除云端选中的 ${model.cloudSelected.size} 个文件"
+                            selectionSync -> "同步选中的 ${model.selected.size} 个文件"
+                            else -> "全量同步"
+                        },
+                        transitionSpec = { fadeIn(tween(120)) togetherWith fadeOut(tween(120)) },
+                        label = "btnLabel",
+                    ) { Text(it) }
+                }
+            }
+        },
     ) { pad ->
         Column(Modifier.padding(pad).fillMaxSize()) {
             if (model.treeUri == null) {
@@ -490,24 +564,6 @@ private fun MainScreen(model: AppModel) {
                     Button(onClick = { model.screen = Screen.Settings }) { Text("选择同步目录") }
                 }
                 return@Column
-            }
-            Button(
-                onClick = { scope.launch { model.runSync(null) } },
-                enabled = !model.busy,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp)
-                    .height(52.dp),
-            ) {
-                if (model.busy) {
-                    CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
-                    Spacer(Modifier.width(12.dp))
-                    Text("同步中")
-                } else {
-                    Icon(Icons.Default.Refresh, null)
-                    Spacer(Modifier.width(12.dp))
-                    Text("同步")
-                }
             }
             AnimatedVisibility(
                 visible = model.lastStats != null,
@@ -519,40 +575,6 @@ private fun MainScreen(model: AppModel) {
                     Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
                     style = MaterialTheme.typography.bodySmall,
                 )
-            }
-            AnimatedVisibility(
-                visible = model.selected.isNotEmpty() && model.viewMode == "local",
-                enter = expandVertically() + fadeIn(),
-                exit = shrinkVertically() + fadeOut(),
-            ) {
-                Button(
-                    onClick = {
-                        val sel = model.selected
-                        scope.launch {
-                            model.runSync { p -> sel.any { s -> p == s || p.startsWith("$s/") } }
-                            model.selected = emptySet()
-                        }
-                    },
-                    enabled = !model.busy,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 4.dp)
-                        .height(44.dp),
-                ) { Text("同步选中 (${model.selected.size})") }
-            }
-            AnimatedVisibility(
-                visible = model.cloudSelected.isNotEmpty() && model.viewMode == "cloud",
-                enter = expandVertically() + fadeIn(),
-                exit = shrinkVertically() + fadeOut(),
-            ) {
-                Button(
-                    onClick = { showBatchDeleteConfirm = true },
-                    enabled = !model.busy,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 4.dp)
-                        .height(44.dp),
-                ) { Text("删除云端选中 (${model.cloudSelected.size})") }
             }
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
@@ -611,16 +633,17 @@ private fun MainScreen(model: AppModel) {
                     contentAlignment = Alignment.Center,
                 ) { CircularProgressIndicator() }
                 else -> LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
-                    items(e) { en ->
-                        val rel = joinDir(model.mainDir, en.name)
-                        if (en.isDir) {
-                            Row(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .clickable { model.mainDir = rel }
-                                    .padding(horizontal = 8.dp, vertical = 2.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
+                        items(e) { en ->
+                            val rel = joinDir(model.mainDir, en.name)
+                            if (en.isDir) {
+                                Row(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .animateItem()
+                                        .clickable { model.mainDir = rel }
+                                        .padding(horizontal = 8.dp, vertical = 2.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
                                 Checkbox(
                                     checked = rel in model.selected,
                                     onCheckedChange = { on ->
@@ -635,6 +658,7 @@ private fun MainScreen(model: AppModel) {
                             Row(
                                 Modifier
                                     .fillMaxWidth()
+                                    .animateItem()
                                     .clickable { model.screen = Screen.Preview(rel) }
                                     .padding(horizontal = 8.dp, vertical = 2.dp),
                                 verticalAlignment = Alignment.CenterVertically,

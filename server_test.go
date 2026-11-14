@@ -99,6 +99,17 @@ func TestDeleteEndpoint(t *testing.T) {
 	if got := del("a.txt", false); got != 404 {
 		t.Errorf("重复删除期望 404, 实际 %d", got)
 	}
+	// 删除文件后应清理变空的父目录（不留目录骨架）
+	_ = os.MkdirAll(filepath.Join(srv.root, "e/f"), 0o755)
+	_ = os.WriteFile(filepath.Join(srv.root, "e/f/c.txt"), []byte("y"), 0o644)
+	if got := del("e/f/c.txt", false); got != 200 {
+		t.Errorf("删除嵌套文件期望 200, 实际 %d", got)
+	}
+	for _, p := range []string{"e/f", "e"} {
+		if _, err := os.Stat(filepath.Join(srv.root, filepath.FromSlash(p))); !os.IsNotExist(err) {
+			t.Errorf("空父目录 %s 应被清理", p)
+		}
+	}
 	// 防误删根目录
 	if got := del("", false); got != 400 {
 		t.Errorf("空路径期望 400, 实际 %d", got)

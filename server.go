@@ -375,6 +375,13 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "删除失败: "+err.Error())
 		return
 	}
+	// 清理因删除而变空的父目录（full 在根内，向上必先经过根，到根即停）：
+	// 上传时 MkdirAll 建出的目录骨架不应在文件删光后残留
+	for dir := filepath.Dir(full); dir != s.root; dir = filepath.Dir(dir) {
+		if err := os.Remove(dir); err != nil {
+			break // 非空或不可删即停
+		}
+	}
 	log.Printf("DELETE %s <- %s", wire, r.RemoteAddr)
 	writeJSON(w, http.StatusOK, map[string]any{"path": wire, "deleted": true})
 }
