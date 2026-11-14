@@ -695,9 +695,9 @@ fun FileSyncApp() {
                                     .fillMaxSize()
                                     .graphicsLayer {
                                         val p = model.backProgress
+                                        // 只缩放+圆角，不做透明渐隐（文字半透明很难看）
                                         scaleX = 1f - 0.1f * p
                                         scaleY = 1f - 0.1f * p
-                                        alpha = 1f - 0.25f * p
                                         shape = RoundedCornerShape(28.dp * p)
                                         clip = p > 0.02f
                                     }
