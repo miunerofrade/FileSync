@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -15,10 +16,30 @@ import (
 
 // ---------- filesync init ----------
 
+// readClientConfig 读取客户端配置文件（服务端 --client-config 生成）。
+func readClientConfig(path string) (server, token string, err error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", "", err
+	}
+	var cfg struct {
+		Server string `json:"server"`
+		Token  string `json:"token"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return "", "", fmt.Errorf("JSON 解析失败: %v", err)
+	}
+	if cfg.Server == "" {
+		return "", "", errors.New("缺少 server 字段")
+	}
+	return strings.TrimSpace(cfg.Server), strings.TrimSpace(cfg.Token), nil
+}
+
 func cmdInit(args []string) {
 	fsSet := flag.NewFlagSet("init", flag.ExitOnError)
 	server := fsSet.String("server", defaultServer, "服务端地址")
 	token := fsSet.String("token", os.Getenv("FILESYNC_TOKEN"), "访问令牌")
+	configFile := fsSet.String("config", "", "从配置文件导入（JSON：server/token，覆盖 --server/--token）")
 	fsSet.Parse(args)
 	if fsSet.NArg() > 1 {
 		badUsage()
@@ -26,6 +47,14 @@ func cmdInit(args []string) {
 	dir := "."
 	if fsSet.NArg() == 1 {
 		dir = fsSet.Arg(0)
+	}
+	if *configFile != "" {
+		s, t, err := readClientConfig(*configFile)
+		if err != nil {
+			fatal("读取配置文件失败: %v", err)
+		}
+		*server = s
+		*token = t
 	}
 	absDir, err := filepath.Abs(dir)
 	if err != nil {

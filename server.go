@@ -382,6 +382,8 @@ func cmdServe(args []string) {
 	token := fsSet.String("token", os.Getenv("FILESYNC_TOKEN"), "访问令牌（非空时启用认证；缺省读 FILESYNC_TOKEN）")
 	certFile := fsSet.String("tls-cert", "", "TLS 证书路径（PEM，与 --tls-key 同时提供时启用 HTTPS）")
 	keyFile := fsSet.String("tls-key", "", "TLS 私钥路径")
+	publicURL := fsSet.String("public-url", "", "对外可达地址（用于生成客户端配置文件）")
+	clientConfig := fsSet.String("client-config", "", "启动时写出客户端配置文件路径（需 --public-url 与 --token）")
 	fsSet.Parse(args)
 	if fsSet.NArg() != 0 {
 		badUsage()
@@ -401,6 +403,18 @@ func cmdServe(args []string) {
 	scheme := "http"
 	if *certFile != "" {
 		scheme = "https"
+	}
+	if *clientConfig != "" {
+		if *publicURL == "" || *token == "" {
+			fatal("--client-config 需要 --public-url 与 --token 同时提供")
+		}
+		if err := os.WriteFile(*clientConfig,
+			[]byte(fmt.Sprintf("{\"server\": \"%s\", \"token\": \"%s\"}\n", strings.TrimSuffix(*publicURL, "/"), strings.TrimSpace(*token))),
+			0o600,
+		); err != nil {
+			fatal("写出客户端配置文件失败: %v", err)
+		}
+		fmt.Printf("客户端配置文件已生成: %s\n", *clientConfig)
 	}
 	fmt.Printf("FileSync 服务端\n  监听:     %s (%s)\n  数据目录: %s\n  认证:     %s\n  (Ctrl+C 退出)\n",
 		ln.Addr(), scheme, srv.root, map[bool]string{true: "已启用", false: "未启用"}[*token != ""])

@@ -206,6 +206,10 @@ class AppModel(val context: Context) {
     }
 
     suspend fun runSync(filter: ((String) -> Boolean)?): SyncEngine.Stats? {
+        android.util.Log.d(
+            "FileSync",
+            "runSync: busy=$busy treeUriSet=${treeUri != null} treeUri=$treeUri",
+        )
         if (busy || treeUri == null) return null
         busy = true
         try {
@@ -524,6 +528,18 @@ private fun SettingsScreen(model: AppModel) {
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) model.onTreePicked(uri)
     }
+    val cfgImporter = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            runCatching {
+                val raw = model.context.contentResolver.openInputStream(uri)
+                    ?.use { it.readBytes() }?.toString(Charsets.UTF_8) ?: return@runCatching
+                val o = JSONObject(raw)
+                model.host = o.optString("server", model.host)
+                model.token = o.optString("token", model.token)
+                model.saveSettings()
+            }
+        }
+    }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -600,6 +616,9 @@ private fun SettingsScreen(model: AppModel) {
             Button(onClick = { picker.launch(null) }, modifier = Modifier.fillMaxWidth()) {
                 Text(if (model.treeUri == null) "选择同步目录" else "更换同步目录")
             }
+            TextButton(onClick = {
+                cfgImporter.launch(arrayOf("application/json", "text/plain", "application/octet-stream", "*/*"))
+            }) { Text("从文件导入配置") }
             model.treeUri?.let { uriStr ->
                 val dirName = remember(uriStr) {
                     DocumentFile.fromTreeUri(model.context, Uri.parse(uriStr))?.name ?: uriStr
@@ -833,7 +852,10 @@ private fun ActionRow(model: AppModel, rel: String) {
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Button(
-            onClick = { scope.launch { model.runSync { it == rel || it.startsWith("$rel/") } } },
+            onClick = {
+                android.util.Log.d("FileSync", "Single file button clicked rel=$rel busy=${model.busy}")
+                scope.launch { model.runSync { it == rel || it.startsWith("$rel/") } }
+            },
             enabled = !model.busy && model.treeUri != null,
             modifier = Modifier.fillMaxWidth().height(48.dp),
         ) { Text("同步此文件") }

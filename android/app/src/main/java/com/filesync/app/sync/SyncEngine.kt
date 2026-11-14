@@ -79,6 +79,7 @@ class SyncEngine(
         union.addAll(locals.keys)
         union.addAll(remotes.keys)
         union.addAll(ctx.st.keys)
+        println("FileSyncSync union=${union} local=${locals.keys} state=${ctx.st.keys}")
         for (rel in union) {
             if (rel == ".filesync.json") continue
             if (filter != null && !filter(rel)) continue
