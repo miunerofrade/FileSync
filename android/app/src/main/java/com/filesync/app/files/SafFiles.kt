@@ -101,20 +101,22 @@ class SafFiles(private val context: Context, private val treeUri: Uri) : LocalFi
         null
     }
 
-    override fun write(rel: String, data: ByteArray): Boolean = try {
-        val parts = rel.split("/")
-        val fileName = parts.last()
-        val dir = dirFor(if (parts.size == 1) "" else parts.dropLast(1).joinToString("/"), true) ?: return false
-        val tmpName = ".fsync-tmp-" + UUID.randomUUID().toString().substring(0, 8) + "-" + fileName
-        val tmp = dir.createFile(mimeOf(fileName), tmpName) ?: return false
-        resolver.openOutputStream(tmp.uri)?.use { it.write(data) } ?: return false
-        if (renameTo(tmp.uri, fileName)) return true
-        // 多数 provider 不允许改名到已存在的名字：删除旧文件后重试
-        val old = dir.findFile(fileName)
-        if (old != null && !old.delete()) return false
-        renameTo(tmp.uri, fileName)
-    } catch (_: Exception) {
-        false
+    override fun write(rel: String, data: ByteArray): Boolean {
+        return try {
+            val parts = rel.split("/")
+            val fileName = parts.last()
+            val dir = dirFor(if (parts.size == 1) "" else parts.dropLast(1).joinToString("/"), true) ?: return false
+            val tmpName = ".fsync-tmp-" + UUID.randomUUID().toString().substring(0, 8) + "-" + fileName
+            val tmp = dir.createFile(mimeOf(fileName), tmpName) ?: return false
+            resolver.openOutputStream(tmp.uri)?.use { it.write(data) } ?: return false
+            if (renameTo(tmp.uri, fileName)) return true
+            // 多数 provider 不允许改名到已存在的名字：删除旧文件后重试
+            val old = dir.findFile(fileName)
+            if (old != null && !old.delete()) return false
+            renameTo(tmp.uri, fileName)
+        } catch (_: Exception) {
+            false
+        }
     }
 
     private fun renameTo(tmpUri: Uri, fileName: String): Boolean = try {

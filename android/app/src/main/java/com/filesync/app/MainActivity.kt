@@ -16,6 +16,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -38,6 +39,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -74,9 +76,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.documentfile.provider.DocumentFile
+import com.filesync.app.api.HttpServerApi
 import com.filesync.app.api.PutStatus
 import com.filesync.app.api.ServerApi
 import com.filesync.app.files.DirEntry
+import com.filesync.app.files.PrefsStateStore
 import com.filesync.app.files.SafFiles
 import com.filesync.app.sync.ConflictInfo
 import com.filesync.app.sync.SyncEngine
@@ -86,7 +90,6 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.resume
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 
@@ -165,7 +168,7 @@ class AppModel(val context: Context) {
             suspendCancellableCoroutine { cont ->
                 conflict = ConflictPrompt(info) { choice ->
                     conflict = null
-                    if (cont.isActive) cont.resume(choice)
+                    if (cont.isActive) cont.resume(choice, null)
                 }
             }
         }

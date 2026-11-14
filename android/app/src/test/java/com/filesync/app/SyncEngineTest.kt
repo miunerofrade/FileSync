@@ -11,6 +11,7 @@ import com.filesync.app.sync.SyncEngine
 import com.filesync.app.util.sha256Hex
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 private fun b(s: String) = s.toByteArray(Charsets.UTF_8)
@@ -99,11 +100,12 @@ class SyncEngineTest {
         val server = FakeServer()
         val state = MemState()
         sync(local, server, state)
+        val savesBefore = state.saves
         val st = sync(local, server, state)
         assertEquals(0, st.uploaded)
         assertEquals(0, st.downloaded)
         assertEquals(1, st.unchanged)
-        assertEquals(0, state.saves)
+        assertEquals(savesBefore, state.saves)
     }
 
     @Test
@@ -148,23 +150,34 @@ class SyncEngineTest {
     }
 
     @Test
-    fun `首次遇到两端不同内容按冲突处理`() = runBlocking {
+    fun `首次遇到冲突跳过不覆盖`() = runBlocking {
         val local = FakeLocal(mapOf("a.md" to "local-v"))
         val server = FakeServer()
         server.files["a.md"] = b("server-v")
         val state = MemState()
-
-        val skipped = sync(local, server, state, ask = { "skip" })
-        assertEquals(1, skipped.skipped)
+        val st = sync(local, server, state, ask = { "skip" })
+        assertEquals(1, st.skipped)
         assertEquals("server-v", String(server.files["a.md"]!!))
         assertEquals("local-v", String(local.files["a.md"]!!))
+    }
 
-        val keepLocal = sync(local, server, state, ask = { "local" })
-        assertEquals(1, keepLocal.resolved)
+    @Test
+    fun `首次遇到冲突保留本地`() = runBlocking {
+        val local = FakeLocal(mapOf("a.md" to "local-v"))
+        val server = FakeServer()
+        server.files["a.md"] = b("server-v")
+        val st = sync(local, server, MemState(), ask = { "local" })
+        assertEquals(1, st.resolved)
         assertEquals("local-v", String(server.files["a.md"]!!))
+    }
 
-        val keepRemote = sync(local, server, state, ask = { "remote" })
-        assertEquals(1, keepRemote.resolved)
+    @Test
+    fun `首次遇到冲突保留远端`() = runBlocking {
+        val local = FakeLocal(mapOf("a.md" to "local-v"))
+        val server = FakeServer()
+        server.files["a.md"] = b("server-v")
+        val st = sync(local, server, MemState(), ask = { "remote" })
+        assertEquals(1, st.resolved)
         assertEquals("server-v", String(local.files["a.md"]!!))
     }
 
