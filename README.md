@@ -170,7 +170,10 @@ curl -s https://get.acme.sh | sh -s -- --server letsencrypt   # 国内机器可�
 CLI（Token 也可用环境变量 FILESYNC_TOKEN）：
 
 ```
-./filesync init --server https://124.222.6.120:8443 --token <令牌> D:/notes
+./filesync init --server https://124.222.6.120:8443 --token <令牌> --subdir photos D:/photos
+./filesync sync
+# 多文件夹隔离：同一配置 + 不同 --subdir（云端按子目录分文件夹存放，互不混淆）
+./filesync init --server https://124.222.6.120:8443 --token <令牌> --subdir notes D:/notes
 ./filesync sync
 ```
 
