@@ -11,8 +11,7 @@ import android.os.ParcelFileDescriptor
 import android.text.method.LinkMovementMethod
 import android.widget.TextView
 import androidx.activity.ComponentActivity
-import androidx.activity.BackEventCompat
-import androidx.activity.compose.PredictiveBackHandler
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -80,9 +79,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -96,6 +93,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.documentfile.provider.DocumentFile
 import com.filesync.app.api.HttpServerApi
 import com.filesync.app.api.PutStatus
+import com.filesync.app.api.RemoteFile
 import com.filesync.app.api.ServerApi
 import com.filesync.app.files.DirEntry
 import com.filesync.app.files.PrefsStateStore
@@ -134,15 +132,14 @@ class AppModel(val context: Context) {
     var lastStats by mutableStateOf<String?>(null)
     var refreshTick by mutableStateOf(0)
     var conflict by mutableStateOf<ConflictPrompt?>(null)
-    var backProgress by mutableStateOf(0f)
     val logLines = mutableStateListOf<String>()
 
-    /** host 可直接填完整 URL（https://IP:8443）；否则按 http://host:port 拼接。 */
+    /** host 可直接填完整 URL（https://IP:8443）；不带协议头时自动按 HTTPS 处理。 */
     val serverUrl: String
         get() {
             val h = host.trim()
             if (h.startsWith("http://") || h.startsWith("https://")) return h.trimEnd('/')
-            return "http://$h:${port.trim()}"
+            return "https://$h:${port.trim()}"
         }
 
     fun log(s: String) {
@@ -189,10 +186,10 @@ class AppModel(val context: Context) {
     }
 
     suspend fun testConnection(): String = withContext(Dispatchers.IO) {
+        val (ok, detail) = api().probe()
+        if (!ok) return@withContext "连接失败: $detail"
         try {
-            val api = api()
-            if (!api.ping()) return@withContext "无法连接"
-            "已连接，服务器文件 ${api.ls().size} 个"
+            "已连接，服务器文件 ${api().ls().size} 个"
         } catch (e: Exception) {
             "连接失败: ${e.message}"
         }
@@ -297,16 +294,7 @@ fun FileSyncApp() {
     val model = remember { AppModel(ctx.applicationContext) }
     FileSyncTheme {
         Surface(Modifier.fillMaxSize()) {
-            // 预测性返回：手势跟手缩放，松手提交或取消
-            PredictiveBackHandler(enabled = model.screen != Screen.Main) { progress ->
-                try {
-                    progress.collect { e -> model.backProgress = e.progress }
-                    model.screen = Screen.Main
-                    model.backProgress = 0f
-                } catch (_: CancellationException) {
-                    model.backProgress = 0f
-                }
-            }
+            BackHandler(enabled = model.screen != Screen.Main) { model.screen = Screen.Main }
             AnimatedContent(
                 targetState = model.screen,
                 transitionSpec = {
@@ -315,24 +303,10 @@ fun FileSyncApp() {
                 },
                 label = "screen",
             ) { s ->
-                Box(
-                    Modifier
-                        .fillMaxSize()
-                        .graphicsLayer {
-                            val p = model.backProgress
-                            scaleX = 1f - 0.12f * p
-                            scaleY = 1f - 0.12f * p
-                            translationX = 40f * p
-                            alpha = 1f - 0.3f * p
-                            shape = RoundedCornerShape((20f * p).dp)
-                            clip = p > 0.02f
-                        }
-                ) {
-                    when (s) {
-                        Screen.Main -> MainScreen(model)
-                        Screen.Settings -> SettingsScreen(model)
-                        is Screen.Preview -> PreviewScreen(model, s.rel)
-                    }
+                when (s) {
+                    Screen.Main -> MainScreen(model)
+                    Screen.Settings -> SettingsScreen(model)
+                    is Screen.Preview -> PreviewScreen(model, s.rel)
                 }
             }
             model.conflict?.let { ConflictDialog(it) }
@@ -360,6 +334,8 @@ private fun MainScreen(model: AppModel) {
     var dir by remember { mutableStateOf("") }
     var entries by remember(dir) { mutableStateOf<List<DirEntry>?>(null) }
     var selected by remember { mutableStateOf(setOf<String>()) }
+    var viewMode by remember { mutableStateOf("local") }
+    var cloudList by remember { mutableStateOf<List<RemoteFile>?>(null) }
     LaunchedEffect(dir, model.refreshTick, model.treeUri) {
         entries = if (model.treeUri == null) {
             null
@@ -370,6 +346,13 @@ private fun MainScreen(model: AppModel) {
                 } catch (_: Exception) {
                     null
                 }
+            }
+        }
+    }
+    LaunchedEffect(viewMode, model.refreshTick, model.treeUri) {
+        if (viewMode == "cloud" && model.treeUri != null) {
+            cloudList = withContext(Dispatchers.IO) {
+                runCatching { model.api().ls("") }.getOrNull()
             }
         }
     }
@@ -447,6 +430,21 @@ private fun MainScreen(model: AppModel) {
                         .padding(horizontal = 16.dp, vertical = 4.dp)
                         .height(44.dp),
                 ) { Text("同步选中 (${selected.size})") }
+            }
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                FilterChip(selected = viewMode == "local", onClick = { viewMode = "local" }, label = { Text("本地") })
+                FilterChip(selected = viewMode == "cloud", onClick = { viewMode = "cloud" }, label = { Text("云端") })
+            }
+            if (viewMode == "cloud") {
+                CloudFileList(
+                    model = model,
+                    refreshTick = model.refreshTick,
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                )
+                return@Column
             }
             val e = entries
             when {
@@ -532,7 +530,6 @@ private fun SettingsScreen(model: AppModel) {
     var testing by remember { mutableStateOf(false) }
     var confirmReset by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
-    val clipboard = LocalClipboardManager.current
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) model.onTreePicked(uri)
     }
@@ -598,21 +595,7 @@ private fun SettingsScreen(model: AppModel) {
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
-            TextButton(onClick = {
-                val raw = clipboard.getText()?.text?.trim() ?: return@TextButton
-                if (raw.startsWith("{")) {
-                    runCatching {
-                        val o = JSONObject(raw)
-                        model.host = o.optString("server", model.host)
-                        model.token = o.optString("token", model.token)
-                        model.subDir = o.optString("subdir", model.subDir)
-                        model.saveSettings()
-                    }
-                } else if (raw.startsWith("http")) {
-                    model.host = raw
-                    model.saveSettings()
-                }
-            }) { Text("从剪贴板导入配置") }
+            TextButton(onClick = { cfgImporter.launch(arrayOf("application/json", "text/plain", "application/octet-stream", "*/*")) }) { Text("从文件导入配置") }
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -633,9 +616,6 @@ private fun SettingsScreen(model: AppModel) {
             Button(onClick = { picker.launch(null) }, modifier = Modifier.fillMaxWidth()) {
                 Text(if (model.treeUri == null) "选择同步目录" else "更换同步目录")
             }
-            TextButton(onClick = {
-                cfgImporter.launch(arrayOf("application/json", "text/plain", "application/octet-stream", "*/*"))
-            }) { Text("从文件导入配置") }
             model.treeUri?.let { uriStr ->
                 val dirName = remember(uriStr) {
                     DocumentFile.fromTreeUri(model.context, Uri.parse(uriStr))?.name ?: uriStr
@@ -944,4 +924,29 @@ private fun formatBytes(n: Long): String {
         x /= 1024
     }
     return String.format("%.1f %cB", n / div.toDouble(), units[exp])
+}
+
+@Composable
+private fun CloudFileList(model: AppModel, refreshTick: Int, modifier: Modifier = Modifier) {
+    var list by remember { mutableStateOf<List<RemoteFile>?>(null) }
+    LaunchedEffect(refreshTick) {
+        list = withContext(Dispatchers.IO) {
+            runCatching { model.api().ls("") }.getOrNull()
+        }
+    }
+    val l = list
+    when {
+        l == null -> Box(modifier, contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+        l.isEmpty() -> Box(modifier, contentAlignment = Alignment.Center) { Text("云端为空") }
+        else -> LazyColumn(modifier) {
+            items(l) { e ->
+                Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp)) {
+                    Column(Modifier.weight(1f)) {
+                        Text(e.path, style = MaterialTheme.typography.bodyLarge)
+                        Text(formatBytes(e.size), style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+        }
+    }
 }

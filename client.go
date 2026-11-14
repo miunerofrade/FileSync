@@ -27,6 +27,9 @@ type Client struct {
 
 func NewClient(server, token, sub string) (*Client, error) {
 	server = strings.TrimSuffix(server, "/")
+	if !strings.Contains(server, "://") {
+		server = "https://" + server
+	}
 	u, err := url.Parse(server)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return nil, fmt.Errorf("无效的 --server 地址 %q（示例: https://124.222.6.120:8443）", server)

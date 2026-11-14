@@ -38,6 +38,18 @@ class HttpServerApi(baseUrl: String, private val token: String, subDir: String) 
         false
     }
 
+    override fun probe(): Pair<Boolean, String> = try {
+        val c = open("/api/ping")
+        val code = c.responseCode
+        when {
+            code == 200 -> true to "ok"
+            code == 401 -> false to "HTTP 401（令牌不匹配）"
+            else -> false to "HTTP $code"
+        }
+    } catch (e: Exception) {
+        false to "${e::class.java.simpleName}: ${e.message}"
+    }
+
     override fun ls(prefix: String): List<RemoteFile> {
         val full = if (prefix.isEmpty()) sub else joinSub(prefix)
         val c = open("/api/ls", if (full.isEmpty()) emptyMap() else mapOf("prefix" to full))

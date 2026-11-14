@@ -3,6 +3,9 @@ package com.filesync.app.api
 interface ServerApi {
     fun ping(): Boolean
 
+    /** 探测连通性，返回 (可达, 失败原因)。 */
+    fun probe(): Pair<Boolean, String>
+
     fun ls(prefix: String = ""): List<RemoteFile>
 
     /** 返回 (内容, 服务器校验和)；远端不存在时返回 null。 */
