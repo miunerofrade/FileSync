@@ -1,0 +1,2 @@
+-keep class io.noties.markwon.** { *; }
+-dontwarn org.jetbrains.annotations.**

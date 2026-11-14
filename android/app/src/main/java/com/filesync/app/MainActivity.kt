@@ -11,10 +11,21 @@ import android.os.ParcelFileDescriptor
 import android.text.method.LinkMovementMethod
 import android.widget.TextView
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.BackHandler
+import androidx.activity.BackEventCompat
+import androidx.activity.compose.PredictiveBackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -32,6 +43,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -68,9 +80,13 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -90,10 +106,12 @@ import com.filesync.app.util.sha256Hex
 import io.noties.markwon.Markwon
 import kotlin.math.max
 import kotlin.math.min
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 
 sealed class Screen {
     data object Main : Screen()
@@ -115,6 +133,7 @@ class AppModel(val context: Context) {
     var lastStats by mutableStateOf<String?>(null)
     var refreshTick by mutableStateOf(0)
     var conflict by mutableStateOf<ConflictPrompt?>(null)
+    var backProgress by mutableStateOf(0f)
     val logLines = mutableStateListOf<String>()
 
     /** host 可直接填完整 URL（https://IP:8443）；否则按 http://host:port 拼接。 */
@@ -135,7 +154,7 @@ class AppModel(val context: Context) {
             .putString("host", host.trim())
             .putString("port", port.trim())
             .putString("token", token.trim())
-            .apply()
+            .commit()
     }
 
     fun onTreePicked(uri: Uri) {
@@ -147,7 +166,7 @@ class AppModel(val context: Context) {
         } catch (_: Exception) {
         }
         treeUri = uri.toString()
-        prefs.edit().putString("treeUri", treeUri).apply()
+        prefs.edit().putString("treeUri", treeUri).commit()
         screen = Screen.Main
     }
 
@@ -240,7 +259,23 @@ class AppModel(val context: Context) {
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        applyConfigIntent(intent)
         setContent { FileSyncApp() }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        applyConfigIntent(intent)
+    }
+
+    /** adb 深链注入配置：am start --es server <url> --es token <令牌> */
+    private fun applyConfigIntent(i: Intent?) {
+        val server = i?.getStringExtra("server") ?: return
+        val p = getSharedPreferences("filesync", Context.MODE_PRIVATE)
+        p.edit()
+            .putString("host", server.trim())
+            .putString("token", (i.getStringExtra("token") ?: "").trim())
+            .commit()
     }
 }
 
@@ -248,13 +283,45 @@ class MainActivity : ComponentActivity() {
 fun FileSyncApp() {
     val ctx = LocalContext.current
     val model = remember { AppModel(ctx.applicationContext) }
-    BackHandler(enabled = model.screen != Screen.Main) { model.screen = Screen.Main }
     FileSyncTheme {
         Surface(Modifier.fillMaxSize()) {
-            when (val s = model.screen) {
-                Screen.Main -> MainScreen(model)
-                Screen.Settings -> SettingsScreen(model)
-                is Screen.Preview -> PreviewScreen(model, s.rel)
+            // 预测性返回：手势跟手缩放，松手提交或取消
+            PredictiveBackHandler(enabled = model.screen != Screen.Main) { progress ->
+                try {
+                    progress.collect { e -> model.backProgress = e.progress }
+                    model.screen = Screen.Main
+                    model.backProgress = 0f
+                } catch (_: CancellationException) {
+                    model.backProgress = 0f
+                }
+            }
+            AnimatedContent(
+                targetState = model.screen,
+                transitionSpec = {
+                    (fadeIn(tween(160)) + slideInHorizontally(tween(160)) { it / 12 })
+                        .togetherWith(fadeOut(tween(120)) + slideOutHorizontally(tween(120)) { -it / 12 })
+                },
+                label = "screen",
+            ) { s ->
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            val p = model.backProgress
+                            scaleX = 1f - 0.12f * p
+                            scaleY = 1f - 0.12f * p
+                            translationX = 40f * p
+                            alpha = 1f - 0.3f * p
+                            shape = RoundedCornerShape((20f * p).dp)
+                            clip = p > 0.02f
+                        }
+                ) {
+                    when (s) {
+                        Screen.Main -> MainScreen(model)
+                        Screen.Settings -> SettingsScreen(model)
+                        is Screen.Preview -> PreviewScreen(model, s.rel)
+                    }
+                }
             }
             model.conflict?.let { ConflictDialog(it) }
         }
@@ -338,14 +405,22 @@ private fun MainScreen(model: AppModel) {
                     Text("同步")
                 }
             }
-            model.lastStats?.let {
+            AnimatedVisibility(
+                visible = model.lastStats != null,
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut(),
+            ) {
                 Text(
-                    it,
-                    Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+                    model.lastStats.orEmpty(),
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
-            if (selected.isNotEmpty()) {
+            AnimatedVisibility(
+                visible = selected.isNotEmpty(),
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut(),
+            ) {
                 Button(
                     onClick = {
                         val sel = selected
@@ -407,21 +482,26 @@ private fun MainScreen(model: AppModel) {
                     }
                     if (model.logLines.isNotEmpty()) {
                         item {
-                            Card(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .padding(12.dp),
+                            AnimatedVisibility(
+                                visible = true,
+                                enter = fadeIn(tween(200)),
                             ) {
-                                Column(
-                                    Modifier.padding(12.dp),
-                                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                                Card(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .padding(12.dp),
                                 ) {
-                                    model.logLines.takeLast(10).forEach {
-                                        Text(
-                                            it,
-                                            style = MaterialTheme.typography.bodySmall,
-                                            fontFamily = FontFamily.Monospace,
-                                        )
+                                    Column(
+                                        Modifier.padding(12.dp),
+                                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                                    ) {
+                                        model.logLines.takeLast(10).forEach {
+                                            Text(
+                                                it,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                fontFamily = FontFamily.Monospace,
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -440,6 +520,7 @@ private fun SettingsScreen(model: AppModel) {
     var testing by remember { mutableStateOf(false) }
     var confirmReset by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val clipboard = LocalClipboardManager.current
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) model.onTreePicked(uri)
     }
@@ -485,6 +566,20 @@ private fun SettingsScreen(model: AppModel) {
                 visualTransformation = PasswordVisualTransformation(),
                 modifier = Modifier.fillMaxWidth(),
             )
+            TextButton(onClick = {
+                val raw = clipboard.getText()?.text?.trim() ?: return@TextButton
+                if (raw.startsWith("{")) {
+                    runCatching {
+                        val o = JSONObject(raw)
+                        model.host = o.optString("server", model.host)
+                        model.token = o.optString("token", model.token)
+                        model.saveSettings()
+                    }
+                } else if (raw.startsWith("http")) {
+                    model.host = raw
+                    model.saveSettings()
+                }
+            }) { Text("从剪贴板导入配置") }
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp),

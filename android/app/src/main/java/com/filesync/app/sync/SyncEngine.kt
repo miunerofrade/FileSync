@@ -71,6 +71,10 @@ class SyncEngine(
         val ctx = Ctx(state, state.load().toMutableMap())
         val locals = local.list().associateBy { it.path }
         val remotes = server.ls().associateBy { it.path }
+        println(
+            "FileSyncSync trace locals=${locals.keys} state=${ctx.st.keys} " +
+                "remotes=${remotes.keys}",
+        )
         val union = sortedSetOf<String>()
         union.addAll(locals.keys)
         union.addAll(remotes.keys)
@@ -128,6 +132,10 @@ class SyncEngine(
 
     private suspend fun handlePresent(ctx: Ctx, rel: String, le: LocalEntry, re: RemoteFile, base: StateEntry?) {
         val lh = local.hash(le) ?: throw Exception("本地文件不可读")
+        println(
+            "FileSyncSync decision $rel lh=${lh.take(12)} re=${re.sha256.take(12)} " +
+                "base=${base?.sha256?.take(12) ?: "none"}",
+        )
         // 决策入口：两端内容一致 → 无论基线是什么状态都直接收敛（自愈过期/损坏的基线）
         if (lh == re.sha256) {
             ctx.record(rel, lh, le.size)
