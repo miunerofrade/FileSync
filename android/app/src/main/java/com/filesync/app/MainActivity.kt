@@ -13,6 +13,7 @@ import android.text.method.LinkMovementMethod
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.BackEventCompat
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.PredictiveBackHandler
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -25,6 +26,7 @@ import androidx.compose.animation.ExperimentalSharedTransitionApi
 import androidx.compose.animation.SharedTransitionLayout
 import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
@@ -225,7 +227,6 @@ class AppModel(val context: Context) {
     var lastStats by mutableStateOf<String?>(null)
     var refreshTick by mutableStateOf(0)
     var conflict by mutableStateOf<ConflictPrompt?>(null)
-    var backProgress by mutableFloatStateOf(0f)
     val logLines = mutableStateListOf<String>()
 
     // 自动更新（GitHub Release）：检查 / 下载进度 / 结果提示
@@ -415,6 +416,20 @@ class AppModel(val context: Context) {
 
     init {
         loadProfiles()
+    }
+
+    // 预测性返回：开关 + 跟手进度（Animatable 支持提交/取消的平滑收敛，避免旧页面弹回原尺寸）
+    var predictiveBack by mutableStateOf(prefs.getBoolean("predictiveBack", true))
+    val backAnimatable = Animatable(0f)
+    val backProgress: Float get() = backAnimatable.value
+
+    suspend fun settleBackProgress() {
+        backAnimatable.animateTo(0f, tween(150))
+    }
+
+    fun setPredictiveBackEnabled(v: Boolean) {
+        predictiveBack = v
+        prefs.edit().putBoolean("predictiveBack", v).commit()
     }
 
     /** host 可直接填完整 URL（https://IP:8443）；不带协议头时自动按 HTTPS 处理。 */
@@ -624,24 +639,37 @@ class MainActivity : ComponentActivity() {
 fun FileSyncApp() {
     val ctx = LocalContext.current
     val model = remember { AppModel(ctx.applicationContext) }
+    val appScope = rememberCoroutineScope()
     FileSyncTheme(useDynamicColor = model.dynamicColor) {
         Surface(Modifier.fillMaxSize()) {
             // 启动自动检查 GitHub Release（24h 节流），发现新版自动弹窗
             LaunchedEffect(Unit) { model.checkUpdate(false) }
-            // 预测性返回（官方模式）：跟手收集进度 → 提交导航 / 取消复位。
-            // 返回目标：预览/设置 → 主屏；主屏在子目录内 → 上一级；主屏根目录 → 无处理（系统退出）
             val canGoBack = model.screen != Screen.Main || model.mainDir.isNotEmpty()
-            PredictiveBackHandler(enabled = canGoBack) { backEvent ->
-                try {
-                    backEvent.collect { e -> model.backProgress = e.progress }
-                    model.backProgress = 0f
+            if (model.predictiveBack) {
+                // 预测性返回（官方模式）：跟手 snapTo 进度 → 提交导航后平滑收敛，
+                // 取消也平滑恢复（不瞬间归零，避免旧页面弹回原尺寸的"跳一下"）
+                PredictiveBackHandler(enabled = canGoBack) { backEvent ->
+                    try {
+                        backEvent.collect { e -> model.backAnimatable.snapTo(e.progress) }
+                        if (model.screen != Screen.Main) {
+                            model.screen = Screen.Main
+                        } else {
+                            model.mainDir = parentDir(model.mainDir)
+                        }
+                        model.settleBackProgress()
+                    } catch (_: CancellationException) {
+                        // 取消时当前协程已被取消，恢复动画放到存活的作用域里跑
+                        appScope.launch { model.settleBackProgress() }
+                    }
+                }
+            } else {
+                // 关闭预测性返回：立即切换
+                BackHandler(enabled = canGoBack) {
                     if (model.screen != Screen.Main) {
                         model.screen = Screen.Main
                     } else {
                         model.mainDir = parentDir(model.mainDir)
                     }
-                } catch (_: CancellationException) {
-                    model.backProgress = 0f
                 }
             }
             SharedTransitionLayout {
@@ -1443,6 +1471,19 @@ private fun SettingsScreen(model: AppModel) {
                 modifier = Modifier.clickable {
                     model.dynamicColor = !model.dynamicColor
                     model.saveSettings()
+                },
+            )
+            ListItem(
+                headlineContent = { Text("预测性返回手势") },
+                supportingContent = { Text("返回时跟手缩放过渡；关闭后立即切换页面") },
+                trailingContent = {
+                    Switch(
+                        checked = model.predictiveBack,
+                        onCheckedChange = { model.setPredictiveBackEnabled(it) },
+                    )
+                },
+                modifier = Modifier.clickable {
+                    model.setPredictiveBackEnabled(!model.predictiveBack)
                 },
             )
             SectionHeader("配置")
