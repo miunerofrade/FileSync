@@ -1,0 +1,404 @@
+package main
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"io/fs"
+	"log"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// tempPrefix 是服务端未完成上传的临时文件前缀；列表会跳过它们。
+const tempPrefix = ".fsync-"
+
+// FileEntry 是文件列表中的一条记录，路径始终以 '/' 分隔。
+type FileEntry struct {
+	Path    string `json:"path"`
+	Size    int64  `json:"size"`
+	Sha256  string `json:"sha256"`
+	ModTime string `json:"mod_time"` // RFC3339 (UTC)
+}
+
+// Server 把所有文件访问限制在数据根目录内。
+type Server struct {
+	root string // 绝对路径
+}
+
+func NewServer(dataDir string) (*Server, error) {
+	root, err := filepath.Abs(dataDir)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return nil, err
+	}
+	return &Server{root: root}, nil
+}
+
+// fullPath 校验相对路径并转换为根目录内的绝对路径。
+// 返回 wire（规范化后的 '/' 分隔路径）与 full（磁盘绝对路径）。
+func (s *Server) fullPath(rel string) (wire, full string, err error) {
+	wire, err = SanitizeRelPath(rel)
+	if err != nil {
+		return "", "", err
+	}
+	full = filepath.Join(s.root, filepath.FromSlash(wire))
+	if !withinRoot(s.root, full) {
+		return "", "", fmt.Errorf("%w: 越出数据目录", errBadPath)
+	}
+	return wire, full, nil
+}
+
+func (s *Server) Handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/ping" && r.Method == http.MethodGet:
+			s.handlePing(w, r)
+		case r.URL.Path == "/api/ls" && r.Method == http.MethodGet:
+			s.handleLs(w, r)
+		case r.URL.Path == "/api/get" && r.Method == http.MethodGet:
+			s.handleGet(w, r)
+		case r.URL.Path == "/api/put" && r.Method == http.MethodPut:
+			s.handlePut(w, r)
+		default:
+			writeError(w, http.StatusNotFound, "未知接口")
+		}
+	})
+	return mux
+}
+
+func (s *Server) handlePing(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleLs 递归列出数据目录下的全部普通文件，可选按 prefix 过滤。
+func (s *Server) handleLs(w http.ResponseWriter, r *http.Request) {
+	prefix := ""
+	if raw := r.URL.Query().Get("prefix"); raw != "" {
+		p, err := SanitizeRelPath(raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "prefix 不合法: "+err.Error())
+			return
+		}
+		prefix = p
+	}
+	entries := []FileEntry{}
+	err := filepath.WalkDir(s.root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err // 根目录不可读等严重错误
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if strings.HasPrefix(d.Name(), tempPrefix) {
+			return nil // 跳过未完成上传的临时文件
+		}
+		rel, err := filepath.Rel(s.root, p)
+		if err != nil {
+			return nil
+		}
+		wire := filepath.ToSlash(rel)
+		if prefix != "" && wire != prefix && !strings.HasPrefix(wire, prefix+"/") {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		sum, err := fileSHA256(p)
+		if err != nil {
+			return nil // 文件在遍历过程中消失，跳过
+		}
+		entries = append(entries, FileEntry{
+			Path:    wire,
+			Size:    info.Size(),
+			Sha256:  sum,
+			ModTime: info.ModTime().UTC().Format(time.RFC3339),
+		})
+		return nil
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "遍历数据目录失败: "+err.Error())
+		return
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
+	writeJSON(w, http.StatusOK, entries)
+}
+
+// handleGet 下载文件：先整体计算 SHA-256，再携带校验头发送。
+func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
+	wire, full, err := s.fullPath(r.URL.Query().Get("path"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	f, err := os.Open(full)
+	if err != nil {
+		if os.IsNotExist(err) {
+			writeError(w, http.StatusNotFound, "文件不存在")
+		} else {
+			writeError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if info.IsDir() {
+		writeError(w, http.StatusBadRequest, "目标是目录")
+		return
+	}
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		writeError(w, http.StatusInternalServerError, "计算校验和失败: "+err.Error())
+		return
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
+	w.Header().Set("X-Checksum-SHA256", hex.EncodeToString(h.Sum(nil)))
+	w.WriteHeader(http.StatusOK)
+	n, err := io.Copy(w, f)
+	if err != nil {
+		log.Printf("GET %s: 传输中断（已发送 %d 字节）: %v", wire, n, err)
+		return
+	}
+	log.Printf("GET %s (%d bytes) -> %s", wire, n, r.RemoteAddr)
+}
+
+// handlePut 上传文件：写临时文件 → fsync → 校验 SHA-256 → 原子改名。
+// 任何一步失败都只会留下待清理的临时文件，已有文件不受影响。
+func (s *Server) handlePut(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	wire, full, err := s.fullPath(q.Get("path"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	overwrite := q.Get("overwrite") == "1" || q.Get("overwrite") == "true"
+	// if-match：条件覆盖（CAS）。仅当服务器当前内容与给定 SHA-256 一致时才允许覆盖，
+	// 同步流程用它防止并发修改被静默覆盖。
+	ifMatch := strings.ToLower(q.Get("if-match"))
+	if ifMatch != "" && (len(ifMatch) != 64 || !isHex(ifMatch)) {
+		writeError(w, http.StatusBadRequest, "非法的 if-match 参数")
+		return
+	}
+	wantSum := strings.ToLower(r.Header.Get("X-Checksum-SHA256"))
+	if len(wantSum) != 64 || !isHex(wantSum) {
+		writeError(w, http.StatusBadRequest, "缺少或非法的 X-Checksum-SHA256 请求头")
+		return
+	}
+
+	if info, err := os.Lstat(full); err == nil {
+		if info.IsDir() {
+			writeError(w, http.StatusBadRequest, "目标路径已是目录")
+			return
+		}
+		if !overwrite {
+			writeError(w, http.StatusConflict, "文件已存在（可加 overwrite=1 覆盖）")
+			return
+		}
+		if ifMatch != "" {
+			cur, herr := fileSHA256(full)
+			if herr != nil {
+				writeError(w, http.StatusInternalServerError, herr.Error())
+				return
+			}
+			if cur != ifMatch {
+				writeError(w, http.StatusPreconditionFailed, "服务器内容已变化（if-match 不匹配），拒绝覆盖")
+				return
+			}
+		}
+	} else if !os.IsNotExist(err) {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	} else if ifMatch != "" {
+		writeError(w, http.StatusPreconditionFailed, "服务器文件已不存在（if-match 不匹配）")
+		return
+	}
+
+	dir := filepath.Dir(full)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		writeError(w, http.StatusInternalServerError, "创建目录失败: "+err.Error())
+		return
+	}
+	tmp, err := os.CreateTemp(dir, tempPrefix+"*")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "创建临时文件失败: "+err.Error())
+		return
+	}
+	tmpName := tmp.Name()
+	done := false
+	defer func() {
+		if !done {
+			tmp.Close()
+			os.Remove(tmpName)
+		}
+	}()
+	_ = tmp.Chmod(0o644)
+
+	size, err := io.Copy(tmp, r.Body)
+	if err != nil {
+		// 客户端中断：丢弃临时文件，已有文件不受影响
+		writeError(w, http.StatusBadRequest, "接收数据中断: "+err.Error())
+		return
+	}
+	if err := tmp.Sync(); err != nil {
+		writeError(w, http.StatusInternalServerError, "刷盘失败: "+err.Error())
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	gotSum, err := fileSHA256(tmpName)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if gotSum != wantSum {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("SHA-256 不匹配（got %s want %s）", gotSum, wantSum))
+		return
+	}
+
+	// 写完后再确认一次“不覆盖”，尽量收窄并发窗口
+	if !overwrite {
+		if _, err := os.Lstat(full); err == nil {
+			writeError(w, http.StatusConflict, "文件已存在（可加 overwrite=1 覆盖）")
+			return
+		} else if !os.IsNotExist(err) {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	// 带条件覆盖时，写入期间服务器文件可能又被并发修改，改名前做最终检查
+	if ifMatch != "" {
+		cur, herr := fileSHA256(full)
+		if herr != nil {
+			if os.IsNotExist(herr) {
+				writeError(w, http.StatusPreconditionFailed, "服务器文件已消失（if-match 不匹配）")
+			} else {
+				writeError(w, http.StatusInternalServerError, herr.Error())
+			}
+			return
+		}
+		if cur != ifMatch {
+			writeError(w, http.StatusPreconditionFailed, "服务器内容已变化（if-match 不匹配），拒绝覆盖")
+			return
+		}
+	}
+	if err := os.Rename(tmpName, full); err != nil {
+		if os.IsExist(err) {
+			writeError(w, http.StatusConflict, "文件已存在")
+		} else {
+			writeError(w, http.StatusInternalServerError, "改名失败: "+err.Error())
+		}
+		return
+	}
+	done = true
+	log.Printf("PUT %s (%d bytes) <- %s", wire, size, r.RemoteAddr)
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"path":   wire,
+		"size":   size,
+		"sha256": gotSum,
+	})
+}
+
+func writeError(w http.ResponseWriter, code int, msg string) {
+	writeJSON(w, code, map[string]string{"error": msg})
+}
+
+func writeJSON(w http.ResponseWriter, code int, v any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+func isHex(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		switch {
+		case c >= '0' && c <= '9', c >= 'a' && c <= 'f':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func fileSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func cmdServe(args []string) {
+	fsSet := flag.NewFlagSet("serve", flag.ExitOnError)
+	addr := fsSet.String("addr", "127.0.0.1:8080", "监听地址，如 127.0.0.1:8080 / :8080")
+	dataDir := fsSet.String("data-dir", "data", "文件存储根目录（缺省为运行目录下的 ./data）")
+	fsSet.Parse(args)
+	if fsSet.NArg() != 0 {
+		badUsage()
+	}
+
+	srv, err := NewServer(*dataDir)
+	if err != nil {
+		fatal("初始化数据目录失败: %v", err)
+	}
+	ln, err := net.Listen("tcp", *addr)
+	if err != nil {
+		fatal("监听 %s 失败: %v", *addr, err)
+	}
+	fmt.Printf("FileSync 服务端\n  监听:     %s\n  数据目录: %s\n  (Ctrl+C 退出)\n", ln.Addr(), srv.root)
+
+	httpSrv := &http.Server{
+		Handler:           srv.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	go func() {
+		<-ctx.Done()
+		fmt.Println("\n正在退出…")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = httpSrv.Shutdown(shutdownCtx)
+	}()
+
+	if err := httpSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		fatal("服务端错误: %v", err)
+	}
+}
