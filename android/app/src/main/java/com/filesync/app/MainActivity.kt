@@ -18,6 +18,10 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.AnimatedVisibilityScope
+import androidx.compose.animation.ExperimentalSharedTransitionApi
+import androidx.compose.animation.SharedTransitionLayout
+import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloat
@@ -32,6 +36,7 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -49,6 +54,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
@@ -63,6 +69,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -83,8 +90,10 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateListOf
@@ -95,6 +104,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
@@ -119,6 +130,7 @@ import com.filesync.app.files.PrefsStateStore
 import com.filesync.app.files.SafFiles
 import com.filesync.app.sync.ConflictInfo
 import com.filesync.app.sync.SyncEngine
+import com.filesync.app.util.Updater
 import com.filesync.app.util.sha256Hex
 import io.noties.markwon.AbstractMarkwonPlugin
 import io.noties.markwon.Markwon
@@ -130,10 +142,13 @@ import io.noties.markwon.ext.tasklist.TaskListPlugin
 import io.noties.markwon.html.HtmlPlugin
 import io.noties.markwon.linkify.LinkifyPlugin
 import org.commonmark.node.Paragraph
+import java.io.File
 import kotlin.math.max
 import kotlin.math.min
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -143,6 +158,24 @@ sealed class Screen {
     data object Main : Screen()
     data object Settings : Screen()
     data class Preview(val rel: String) : Screen()
+}
+
+/** 共享元素转场作用域（文件名从列表"飞入"预览页标题）。 */
+@OptIn(ExperimentalSharedTransitionApi::class)
+val LocalSharedTransitionScope = compositionLocalOf<SharedTransitionScope?> { null }
+val LocalNavAnimatedVisibilityScope = compositionLocalOf<AnimatedVisibilityScope?> { null }
+
+@OptIn(ExperimentalSharedTransitionApi::class)
+@Composable
+private fun Modifier.fileSharedBounds(key: String): Modifier {
+    val sts = LocalSharedTransitionScope.current ?: return this
+    val avs = LocalNavAnimatedVisibilityScope.current ?: return this
+    return with(sts) {
+        this@fileSharedBounds.sharedBounds(
+            rememberSharedContentState(key = key),
+            animatedVisibilityScope = avs,
+        )
+    }
 }
 
 class ConflictPrompt(val info: ConflictInfo, val onChoice: (String) -> Unit)
@@ -170,6 +203,75 @@ class AppModel(val context: Context) {
     var conflict by mutableStateOf<ConflictPrompt?>(null)
     var backProgress by mutableFloatStateOf(0f)
     val logLines = mutableStateListOf<String>()
+
+    // 自动更新（GitHub Release）：检查 / 下载进度 / 结果提示
+    private val modelScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    var updateInfo by mutableStateOf<Updater.Info?>(null)
+    var updateProgress by mutableStateOf(-1) // -1 = 未在下载
+    var manualChecking by mutableStateOf(false)
+    var manualCheckResult by mutableStateOf<String?>(null)
+    var updateErr by mutableStateOf<String?>(null)
+
+    fun currentVersion(): String = try {
+        context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: ""
+    } catch (_: Exception) {
+        ""
+    }
+
+    /** manual=false 时 24h 节流（自动检查）；manual=true 立即检查并展示结果。 */
+    fun checkUpdate(manual: Boolean) {
+        if (manualChecking) return
+        if (!manual &&
+            System.currentTimeMillis() - prefs.getLong("lastUpdateCheck", 0) < 24 * 3600 * 1000L
+        ) {
+            return
+        }
+        manualChecking = true
+        updateErr = null
+        if (manual) manualCheckResult = null
+        modelScope.launch {
+            val info = try {
+                withContext(Dispatchers.IO) { Updater.check(currentVersion()) }
+            } catch (e: Exception) {
+                manualChecking = false
+                if (manual) updateErr = "检查失败: ${e.message}"
+                return@launch
+            }
+            manualChecking = false
+            prefs.edit().putLong("lastUpdateCheck", System.currentTimeMillis()).commit()
+            if (info == null) {
+                if (manual) manualCheckResult = "已是最新版本（v${currentVersion()}）"
+            } else {
+                updateInfo = info
+            }
+        }
+    }
+
+    fun downloadAndInstall() {
+        val info = updateInfo ?: return
+        if (updateProgress >= 0) return
+        updateProgress = 0
+        updateErr = null
+        modelScope.launch {
+            val apk = withContext(Dispatchers.IO) {
+                Updater.download(info.apkUrl, File(context.cacheDir, "apk/update.apk")) { p ->
+                    updateProgress = p
+                }
+            }
+            updateProgress = -1
+            if (apk == null) {
+                updateErr = "下载失败，请检查网络后重试"
+                return@launch
+            }
+            val ok = try {
+                Updater.install(context, apk)
+            } catch (e: Exception) {
+                updateErr = "无法调起安装: ${e.message}"
+                false
+            }
+            if (ok) updateInfo = null
+        }
+    }
 
     /** host 可直接填完整 URL（https://IP:8443）；不带协议头时自动按 HTTPS 处理。 */
     val serverUrl: String
@@ -350,12 +452,15 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@OptIn(ExperimentalSharedTransitionApi::class)
 @Composable
 fun FileSyncApp() {
     val ctx = LocalContext.current
     val model = remember { AppModel(ctx.applicationContext) }
     FileSyncTheme(useDynamicColor = model.dynamicColor) {
         Surface(Modifier.fillMaxSize()) {
+            // 启动自动检查 GitHub Release（24h 节流），发现新版自动弹窗
+            LaunchedEffect(Unit) { model.checkUpdate(false) }
             // 预测性返回（官方模式）：跟手收集进度 → 提交导航 / 取消复位。
             // 返回目标：预览/设置 → 主屏；主屏在子目录内 → 上一级；主屏根目录 → 无处理（系统退出）
             val canGoBack = model.screen != Screen.Main || model.mainDir.isNotEmpty()
@@ -372,41 +477,97 @@ fun FileSyncApp() {
                     model.backProgress = 0f
                 }
             }
-            AnimatedContent(
-                targetState = model.screen,
-                transitionSpec = {
-                    // 返回（目标为主屏）：内容向右推回；前进：从右滑入
-                    val goingBack = targetState == Screen.Main
-                    if (goingBack) {
-                        (fadeIn(tween(150)) + slideInHorizontally(tween(150)) { -it / 12 })
-                            .togetherWith(fadeOut(tween(120)) + slideOutHorizontally(tween(120)) { it / 12 })
-                    } else {
-                        (fadeIn(tween(160)) + slideInHorizontally(tween(160)) { it / 12 })
-                            .togetherWith(fadeOut(tween(120)) + slideOutHorizontally(tween(120)) { -it / 12 })
-                    }
-                },
-                label = "screen",
-            ) { s ->
-                Box(
-                    Modifier
-                        .fillMaxSize()
-                        .graphicsLayer {
-                            val p = model.backProgress
-                            scaleX = 1f - 0.1f * p
-                            scaleY = 1f - 0.1f * p
-                            alpha = 1f - 0.25f * p
-                            shape = RoundedCornerShape(28.dp * p)
-                            clip = p > 0.02f
+            SharedTransitionLayout {
+                CompositionLocalProvider(LocalSharedTransitionScope provides this) {
+                    AnimatedContent(
+                        targetState = model.screen,
+                        transitionSpec = {
+                            // 返回（目标为主屏）：内容向右推回；前进：从右滑入
+                            val goingBack = targetState == Screen.Main
+                            if (goingBack) {
+                                (fadeIn(tween(150)) + slideInHorizontally(tween(150)) { -it / 12 })
+                                    .togetherWith(fadeOut(tween(120)) + slideOutHorizontally(tween(120)) { it / 12 })
+                            } else {
+                                (fadeIn(tween(160)) + slideInHorizontally(tween(160)) { it / 12 })
+                                    .togetherWith(fadeOut(tween(120)) + slideOutHorizontally(tween(120)) { -it / 12 })
+                            }
+                        },
+                        label = "screen",
+                    ) { s ->
+                        CompositionLocalProvider(
+                            LocalNavAnimatedVisibilityScope provides this@AnimatedContent,
+                        ) {
+                            Box(
+                                Modifier
+                                    .fillMaxSize()
+                                    .graphicsLayer {
+                                        val p = model.backProgress
+                                        scaleX = 1f - 0.1f * p
+                                        scaleY = 1f - 0.1f * p
+                                        alpha = 1f - 0.25f * p
+                                        shape = RoundedCornerShape(28.dp * p)
+                                        clip = p > 0.02f
+                                    }
+                            ) {
+                                when (s) {
+                                    Screen.Main -> MainScreen(model)
+                                    Screen.Settings -> SettingsScreen(model)
+                                    is Screen.Preview -> PreviewScreen(model, s.rel)
+                                }
+                            }
                         }
-                ) {
-                    when (s) {
-                        Screen.Main -> MainScreen(model)
-                        Screen.Settings -> SettingsScreen(model)
-                        is Screen.Preview -> PreviewScreen(model, s.rel)
                     }
                 }
             }
             model.conflict?.let { ConflictDialog(it) }
+            // 自动更新：发现新版 → 弹窗（说明 + 进度 + 调起安装）
+            model.updateInfo?.let { info ->
+                AlertDialog(
+                    onDismissRequest = {
+                        if (model.updateProgress < 0) model.updateInfo = null
+                    },
+                    title = { Text("发现新版本 ${info.tag}") },
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            if (info.notes.isNotBlank()) {
+                                Text(info.notes, style = MaterialTheme.typography.bodySmall)
+                            }
+                            if (model.updateProgress >= 0) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                ) {
+                                    LinearProgressIndicator(
+                                        progress = { model.updateProgress / 100f },
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    Text("${model.updateProgress}%", style = MaterialTheme.typography.bodySmall)
+                                }
+                            }
+                            model.updateErr?.let {
+                                Text(
+                                    it,
+                                    color = MaterialTheme.colorScheme.error,
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(
+                            onClick = { model.downloadAndInstall() },
+                            enabled = model.updateProgress < 0,
+                        ) {
+                            Text(if (model.updateProgress >= 0) "下载中…" else "下载并安装")
+                        }
+                    },
+                    dismissButton = {
+                        TextButton({ model.updateInfo = null }) {
+                            Text(if (model.updateProgress >= 0) "后台下载" else "稍后再说")
+                        }
+                    },
+                )
+            }
         }
     }
 }
@@ -628,10 +789,7 @@ private fun MainScreen(model: AppModel) {
             }
             val e = entries
             when {
-                e == null -> Box(
-                    Modifier.weight(1f).fillMaxWidth(),
-                    contentAlignment = Alignment.Center,
-                ) { CircularProgressIndicator() }
+                e == null -> SkeletonList(8, Modifier.weight(1f).fillMaxWidth())
                 else -> LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
                         items(e) { en ->
                             val rel = joinDir(model.mainDir, en.name)
@@ -671,7 +829,11 @@ private fun MainScreen(model: AppModel) {
                                     },
                                 )
                                 Column(Modifier.weight(1f)) {
-                                    Text(en.name, style = MaterialTheme.typography.bodyLarge)
+                                    Text(
+                                        en.name,
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        modifier = Modifier.fileSharedBounds("file-$rel"),
+                                    )
                                     Text(
                                         formatBytes(en.size),
                                         style = MaterialTheme.typography.bodySmall,
@@ -749,6 +911,57 @@ private fun MainScreen(model: AppModel) {
             },
             dismissButton = { TextButton({ showBatchDeleteConfirm = false }) { Text("取消") } },
         )
+    }
+}
+
+/** shimmer 骨架屏：列表加载中的占位（无第三方依赖）。 */
+@Composable
+private fun SkeletonList(rows: Int, modifier: Modifier = Modifier) {
+    val x = rememberInfiniteTransition(label = "shimmer").animateFloat(
+        0f,
+        1600f,
+        infiniteRepeatable(tween(1100, easing = LinearEasing)),
+        label = "shx",
+    ).value
+    val base = MaterialTheme.colorScheme.surfaceVariant
+    val hl = MaterialTheme.colorScheme.surface
+    Column(
+        modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        repeat(rows) {
+            val brush = Brush.linearGradient(
+                listOf(base, hl, base),
+                start = Offset(x - 400f, 0f),
+                end = Offset(x, 400f),
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier
+                        .size(38.dp)
+                        .clip(CircleShape)
+                        .background(brush),
+                )
+                Spacer(Modifier.width(12.dp))
+                Column {
+                    Box(
+                        Modifier
+                            .fillMaxWidth(0.55f)
+                            .height(16.dp)
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(brush),
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Box(
+                        Modifier
+                            .fillMaxWidth(0.35f)
+                            .height(12.dp)
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(brush),
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -904,6 +1117,30 @@ private fun SettingsScreen(model: AppModel) {
             )
             SectionHeader("配置")
             ListItem(
+                headlineContent = { Text("检查更新") },
+                supportingContent = {
+                    when {
+                        model.manualChecking -> Text("正在检查…")
+                        model.updateErr != null -> Text(
+                            model.updateErr!!,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                        model.manualCheckResult != null -> Text(model.manualCheckResult!!)
+                        else -> Text("当前版本 v${model.currentVersion()}（启动时也会自动检查）")
+                    }
+                },
+                trailingContent = {
+                    if (model.manualChecking) {
+                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                    } else {
+                        Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null)
+                    }
+                },
+                modifier = Modifier.clickable(enabled = !model.manualChecking) {
+                    model.checkUpdate(true)
+                },
+            )
+            ListItem(
                 headlineContent = { Text("从文件导入配置") },
                 supportingContent = { Text("JSON 文件：服务器 / 令牌 / 分组") },
                 trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null) },
@@ -947,7 +1184,12 @@ private fun PreviewScreen(model: AppModel, rel: String) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(rel.substringAfterLast('/')) },
+                title = {
+                    Text(
+                        rel.substringAfterLast('/'),
+                        modifier = Modifier.fileSharedBounds("file-$rel"),
+                    )
+                },
                 navigationIcon = {
                     IconButton(onClick = { model.screen = Screen.Main }) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, null)
@@ -1240,7 +1482,7 @@ private fun CloudFileList(model: AppModel, refreshTick: Int, modifier: Modifier 
     }
     val l = list
     when {
-        l == null -> Box(modifier, contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+        l == null -> SkeletonList(6, modifier)
         l.isEmpty() -> Box(modifier, contentAlignment = Alignment.Center) { Text("云端为空") }
         else -> LazyColumn(modifier) {
             items(l) { e ->
