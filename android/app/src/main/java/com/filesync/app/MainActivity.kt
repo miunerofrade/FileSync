@@ -48,6 +48,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Refresh
@@ -61,6 +62,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -726,6 +728,16 @@ private fun MainScreen(model: AppModel) {
     }
 }
 
+@Composable
+private fun SectionHeader(text: String) {
+    Text(
+        text,
+        style = MaterialTheme.typography.labelLarge,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier.padding(start = 16.dp, top = 20.dp, bottom = 4.dp),
+    )
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SettingsScreen(model: AppModel) {
@@ -765,24 +777,23 @@ private fun SettingsScreen(model: AppModel) {
         Column(
             Modifier
                 .padding(pad)
-                .padding(16.dp)
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            SectionHeader("服务器")
             OutlinedTextField(
                 value = model.host,
                 onValueChange = { model.host = it; model.saveSettings() },
                 label = { Text("服务器地址（IP 或 https://IP:端口）") },
                 singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
             )
             OutlinedTextField(
                 value = model.port,
                 onValueChange = { model.port = it; model.saveSettings() },
                 label = { Text("端口（填完整 URL 时忽略）") },
                 singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
             )
             OutlinedTextField(
                 value = model.token,
@@ -790,55 +801,93 @@ private fun SettingsScreen(model: AppModel) {
                 label = { Text("访问令牌") },
                 singleLine = true,
                 visualTransformation = PasswordVisualTransformation(),
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
             )
+            ListItem(
+                headlineContent = { Text("测试连接") },
+                supportingContent = {
+                    testResult?.let { Text(it) } ?: Text("发送 ping 并统计云端文件数")
+                },
+                trailingContent = {
+                    if (testing) {
+                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                    } else {
+                        Icon(Icons.Default.Refresh, contentDescription = null)
+                    }
+                },
+                modifier = Modifier.clickable(enabled = !testing) {
+                    testing = true
+                    scope.launch {
+                        testResult = model.testConnection()
+                        testing = false
+                    }
+                },
+            )
+            SectionHeader("同步")
             OutlinedTextField(
                 value = model.subDir,
                 onValueChange = { model.subDir = it; model.saveSettings() },
                 label = { Text("云端子目录（可选，同步组）") },
                 singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
                 trailingIcon = {
                     IconButton(onClick = { showGroupInfo = true }) {
                         Icon(Icons.Default.Info, contentDescription = "分组说明")
                     }
                 },
             )
-            TextButton(onClick = { cfgImporter.launch(arrayOf("application/json", "text/plain", "application/octet-stream", "*/*")) }) { Text("从文件导入配置") }
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                Text("动态取色（Material You）", style = MaterialTheme.typography.bodyMedium)
-                Switch(checked = model.dynamicColor, onCheckedChange = { model.dynamicColor = it; model.saveSettings() })
-            }
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                Button(
-                    onClick = {
-                        testing = true
-                        scope.launch {
-                            testResult = model.testConnection()
-                            testing = false
-                        }
-                    },
-                    enabled = !testing,
-                ) { Text("测试连接") }
-                if (testing) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                testResult?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-            }
-            Button(onClick = { picker.launch(null) }, modifier = Modifier.fillMaxWidth()) {
-                Text(if (model.treeUri == null) "选择同步目录" else "更换同步目录")
-            }
-            model.treeUri?.let { uriStr ->
-                val dirName = remember(uriStr) {
+            val dirName = model.treeUri?.let { uriStr ->
+                remember(uriStr) {
                     DocumentFile.fromTreeUri(model.context, Uri.parse(uriStr))?.name ?: uriStr
                 }
-                Text(dirName, style = MaterialTheme.typography.bodyMedium)
-                TextButton(onClick = { confirmReset = true }) { Text("重置同步基线") }
             }
+            ListItem(
+                headlineContent = { Text(if (model.treeUri == null) "选择同步目录" else "同步目录") },
+                supportingContent = {
+                    Text(dirName ?: "点击选择（SAF，权限持久化）")
+                },
+                trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null) },
+                modifier = Modifier.clickable { picker.launch(null) },
+            )
+            if (model.treeUri != null) {
+                ListItem(
+                    headlineContent = {
+                        Text("重置同步基线", color = MaterialTheme.colorScheme.error)
+                    },
+                    supportingContent = {
+                        Text(
+                            "下次同步将重新比较两端内容，内容不同的文件需手动选择版本",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    },
+                    modifier = Modifier.clickable { confirmReset = true },
+                )
+            }
+            SectionHeader("外观")
+            ListItem(
+                headlineContent = { Text("动态取色") },
+                supportingContent = { Text("Material You：跟随系统壁纸取色（Android 12+ 生效）") },
+                trailingContent = {
+                    Switch(
+                        checked = model.dynamicColor,
+                        onCheckedChange = { model.dynamicColor = it; model.saveSettings() },
+                    )
+                },
+                modifier = Modifier.clickable {
+                    model.dynamicColor = !model.dynamicColor
+                    model.saveSettings()
+                },
+            )
+            SectionHeader("配置")
+            ListItem(
+                headlineContent = { Text("从文件导入配置") },
+                supportingContent = { Text("JSON 文件：服务器 / 令牌 / 分组") },
+                trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null) },
+                modifier = Modifier.clickable {
+                    cfgImporter.launch(arrayOf("application/json", "text/plain", "application/octet-stream", "*/*"))
+                },
+            )
+            Spacer(Modifier.height(24.dp))
         }
     }
     if (showGroupInfo) {
