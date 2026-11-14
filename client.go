@@ -21,16 +21,32 @@ const defaultServer = "http://127.0.0.1:8080"
 type Client struct {
 	base  string
 	token string
+	sub   string // 云端子目录前缀（subdir 同步组，空 = 服务器根）
 	hc    *http.Client
 }
 
-func NewClient(server, token string) (*Client, error) {
+func NewClient(server, token, sub string) (*Client, error) {
 	server = strings.TrimSuffix(server, "/")
 	u, err := url.Parse(server)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return nil, fmt.Errorf("无效的 --server 地址 %q（示例: https://124.222.6.120:8443）", server)
 	}
-	return &Client{base: server, token: strings.TrimSpace(token), hc: &http.Client{}}, nil
+	if sub != "" {
+		s, err := SanitizeRelPath(strings.TrimSuffix(strings.TrimSpace(sub), "/"))
+		if err != nil {
+			return nil, fmt.Errorf("subdir 不合法: %v", err)
+		}
+		sub = s
+	}
+	return &Client{base: server, token: strings.TrimSpace(token), sub: sub, hc: &http.Client{}}, nil
+}
+
+// joinSub 把本地视角的相对路径映射为云端路径（subdir 前缀）。
+func (c *Client) joinSub(rel string) string {
+	if c.sub == "" || rel == "" {
+		return rel
+	}
+	return c.sub + "/" + rel
 }
 
 // newRequest 统一附加认证头。
@@ -67,9 +83,13 @@ func serverError(resp *http.Response) error {
 
 // Ls 获取服务端文件列表（prefix 为空表示全部）。
 func (c *Client) Ls(prefix string) ([]FileEntry, error) {
-	v := url.Values{}
+	full := c.sub
 	if prefix != "" {
-		v.Set("prefix", prefix)
+		full = c.joinSub(prefix)
+	}
+	v := url.Values{}
+	if full != "" {
+		v.Set("prefix", full)
 	}
 	req, err := c.newRequest(http.MethodGet, c.base+"/api/ls?"+v.Encode(), nil)
 	if err != nil {
@@ -87,12 +107,19 @@ func (c *Client) Ls(prefix string) ([]FileEntry, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&entries); err != nil {
 		return nil, fmt.Errorf("解析文件列表失败: %w", err)
 	}
+	if full != "" {
+		p := full + "/"
+		for i := range entries {
+			entries[i].Path = strings.TrimPrefix(entries[i].Path, p)
+		}
+	}
 	return entries, nil
 }
 
 // Put 上传文件内容。返回服务端状态码；错误仅表示请求层面的失败。
 // ifMatch 非空时启用条件覆盖：仅当服务器当前内容哈希与之一致才接受。
 func (c *Client) Put(wire string, size int64, sum string, body io.Reader, overwrite bool, ifMatch string) (int, error) {
+	wire = c.joinSub(wire)
 	v := url.Values{}
 	v.Set("path", wire)
 	if overwrite {
@@ -127,6 +154,7 @@ func (c *Client) Put(wire string, size int64, sum string, body io.Reader, overwr
 // Get 下载远端文件到 localPath：临时文件 + SHA-256 校验 + 原子改名，
 // 任何失败都不会改动已存在的本地文件。返回写入字节数与实际内容的 SHA-256。
 func (c *Client) Get(wire, localPath string, overwrite bool) (int64, string, error) {
+	wire = c.joinSub(wire)
 	if info, err := os.Stat(localPath); err == nil && info.IsDir() {
 		return 0, "", fmt.Errorf("本地目标 %q 是目录", localPath)
 	}
@@ -243,6 +271,7 @@ func cmdLs(args []string) {
 	fsSet := flag.NewFlagSet("ls", flag.ExitOnError)
 	server := fsSet.String("server", defaultServer, "服务端地址")
 	token := fsSet.String("token", os.Getenv("FILESYNC_TOKEN"), "访问令牌")
+	subdir := fsSet.String("subdir", "", "云端子目录（同步组前缀）")
 	prefix := fsSet.String("prefix", "", "仅列出该远端子目录")
 	fsSet.Parse(args)
 	if fsSet.NArg() != 0 {
@@ -260,7 +289,7 @@ func cmdLs(args []string) {
 			}
 		}
 	}
-	c, err := NewClient(*server, *token)
+	c, err := NewClient(*server, *token, *subdir)
 	if err != nil {
 		fatal("%v", err)
 	}
@@ -284,6 +313,7 @@ func cmdPut(args []string) {
 	fsSet := flag.NewFlagSet("put", flag.ExitOnError)
 	server := fsSet.String("server", defaultServer, "服务端地址")
 	token := fsSet.String("token", os.Getenv("FILESYNC_TOKEN"), "访问令牌")
+	subdir := fsSet.String("subdir", "", "云端子目录（同步组前缀）")
 	overwrite := fsSet.Bool("overwrite", false, "覆盖远端同名文件")
 	fsSet.Parse(args)
 	if fsSet.NArg() < 1 || fsSet.NArg() > 2 {
@@ -298,7 +328,7 @@ func cmdPut(args []string) {
 	if err != nil {
 		fatal("%v", err)
 	}
-	c, err := NewClient(*server, *token)
+	c, err := NewClient(*server, *token, *subdir)
 	if err != nil {
 		fatal("%v", err)
 	}
@@ -374,6 +404,7 @@ func cmdGet(args []string) {
 	fsSet := flag.NewFlagSet("get", flag.ExitOnError)
 	server := fsSet.String("server", defaultServer, "服务端地址")
 	token := fsSet.String("token", os.Getenv("FILESYNC_TOKEN"), "访问令牌")
+	subdir := fsSet.String("subdir", "", "云端子目录（同步组前缀）")
 	overwrite := fsSet.Bool("overwrite", false, "覆盖本地同名文件")
 	fsSet.Parse(args)
 	if fsSet.NArg() < 1 || fsSet.NArg() > 2 {
@@ -387,7 +418,7 @@ func cmdGet(args []string) {
 	if local == "" {
 		local = filepath.Base(filepath.FromSlash(wire))
 	}
-	c, err := NewClient(*server, *token)
+	c, err := NewClient(*server, *token, *subdir)
 	if err != nil {
 		fatal("%v", err)
 	}

@@ -39,6 +39,7 @@ func cmdInit(args []string) {
 	fsSet := flag.NewFlagSet("init", flag.ExitOnError)
 	server := fsSet.String("server", defaultServer, "服务端地址")
 	token := fsSet.String("token", os.Getenv("FILESYNC_TOKEN"), "访问令牌")
+	subdir := fsSet.String("subdir", "", "云端子目录（同步组前缀）")
 	configFile := fsSet.String("config", "", "从配置文件导入（JSON：server/token，覆盖 --server/--token）")
 	fsSet.Parse(args)
 	if fsSet.NArg() > 1 {
@@ -66,14 +67,14 @@ func cmdInit(args []string) {
 	if _, err := os.Stat(filepath.Join(absDir, stateFileName)); err == nil {
 		fatal("目录已初始化: %s（删除 %s 可重新初始化）", absDir, stateFileName)
 	}
-	c, err := NewClient(*server, *token)
+	c, err := NewClient(*server, *token, *subdir)
 	if err != nil {
 		fatal("%v", err)
 	}
 	if _, err := c.Ls(""); err != nil {
 		fatal("服务端不可用: %v", err)
 	}
-	st := &SyncState{Version: 1, Server: c.base, Token: strings.TrimSpace(*token), Files: map[string]*StateEntry{}}
+	st := &SyncState{Version: 1, Server: c.base, Token: strings.TrimSpace(*token), SubDir: strings.TrimSpace(*subdir), Files: map[string]*StateEntry{}}
 	if err := saveState(absDir, st); err != nil {
 		fatal("保存状态失败: %v", err)
 	}
@@ -138,7 +139,7 @@ func cmdSync(args []string) {
 	if tk == "" {
 		tk = st.Token
 	}
-	c, err := NewClient(st.Server, tk)
+	c, err := NewClient(st.Server, tk, st.SubDir)
 	if err != nil {
 		fatal("%v", err)
 	}

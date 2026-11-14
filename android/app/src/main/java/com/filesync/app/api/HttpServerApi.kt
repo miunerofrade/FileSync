@@ -7,9 +7,14 @@ import java.net.URL
 import java.net.URLEncoder
 import org.json.JSONArray
 
-class HttpServerApi(baseUrl: String, private val token: String) : ServerApi {
+class HttpServerApi(baseUrl: String, private val token: String, subDir: String) : ServerApi {
 
     private val base = baseUrl.trimEnd('/')
+    private val sub = subDir.trim().trimEnd('/')
+
+    /** 本地相对路径 → 云端路径（加 subdir 前缀）。 */
+    private fun joinSub(rel: String): String =
+        if (sub.isEmpty() || rel.isEmpty()) rel else "$sub/$rel"
 
     private fun open(path: String, query: Map<String, String> = emptyMap()): HttpURLConnection {
         val sb = StringBuilder(base).append(path)
@@ -33,19 +38,22 @@ class HttpServerApi(baseUrl: String, private val token: String) : ServerApi {
     }
 
     override fun ls(prefix: String): List<RemoteFile> {
-        val c = open("/api/ls", if (prefix.isEmpty()) emptyMap() else mapOf("prefix" to prefix))
+        val full = if (prefix.isEmpty()) sub else joinSub(prefix)
+        val c = open("/api/ls", if (full.isEmpty()) emptyMap() else mapOf("prefix" to full))
         if (c.responseCode != 200) throw ServerException("ls 失败 HTTP ${c.responseCode}", c.responseCode)
         val arr = JSONArray(c.inputStream.use { it.readBytes() }.toString(Charsets.UTF_8))
         val out = ArrayList<RemoteFile>(arr.length())
+        val p = if (full.isEmpty()) "" else "$full/"
         for (i in 0 until arr.length()) {
             val o = arr.getJSONObject(i)
-            out.add(RemoteFile(o.getString("path"), o.getLong("size"), o.getString("sha256"), o.optString("mod_time")))
+            val path = o.getString("path").removePrefix(p)
+            out.add(RemoteFile(path, o.getLong("size"), o.getString("sha256"), o.optString("mod_time")))
         }
         return out
     }
 
     override fun get(path: String): Pair<ByteArray, String>? {
-        val c = open("/api/get", mapOf("path" to path))
+        val c = open("/api/get", mapOf("path" to joinSub(path)))
         when (c.responseCode) {
             200 -> {}
             404 -> return null
@@ -60,7 +68,7 @@ class HttpServerApi(baseUrl: String, private val token: String) : ServerApi {
 
     override fun put(path: String, data: ByteArray, overwrite: Boolean, ifMatch: String?): PutStatus {
         val q = HashMap<String, String>()
-        q["path"] = path
+        q["path"] = joinSub(path)
         if (overwrite) q["overwrite"] = "1"
         if (ifMatch != null) q["if-match"] = ifMatch
         val c = open("/api/put", q)

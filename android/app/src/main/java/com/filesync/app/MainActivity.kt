@@ -128,6 +128,7 @@ class AppModel(val context: Context) {
     var host by mutableStateOf(prefs.getString("host", "127.0.0.1") ?: "127.0.0.1")
     var port by mutableStateOf(prefs.getString("port", "8080") ?: "8080")
     var token by mutableStateOf(prefs.getString("token", "") ?: "")
+    var subDir by mutableStateOf(prefs.getString("subdir", "") ?: "")
     var treeUri by mutableStateOf<String?>(prefs.getString("treeUri", null))
     var busy by mutableStateOf(false)
     var lastStats by mutableStateOf<String?>(null)
@@ -154,7 +155,8 @@ class AppModel(val context: Context) {
             .putString("host", host.trim())
             .putString("port", port.trim())
             .putString("token", token.trim())
-            .commit()
+            .putString("subdir", subDir.trim())
+            .apply()
     }
 
     fun onTreePicked(uri: Uri) {
@@ -166,13 +168,18 @@ class AppModel(val context: Context) {
         } catch (_: Exception) {
         }
         treeUri = uri.toString()
-        prefs.edit().putString("treeUri", treeUri).commit()
+        // 换同步目录时重置基线与子目录绑定（新目录是新同步组）
+        prefs.edit()
+            .putString("treeUri", treeUri)
+            .putString("subdir", "")
+            .putString("state:${treeUri ?: ""}", "")
+            .commit()
         screen = Screen.Main
     }
 
     fun localFiles(): SafFiles = SafFiles(context, Uri.parse(treeUri))
 
-    fun api(): ServerApi = HttpServerApi(serverUrl, token.trim())
+    fun api(): ServerApi = HttpServerApi(serverUrl, token.trim(), subDir.trim())
 
     fun stateStore(): PrefsStateStore = PrefsStateStore(prefs, "state:" + (treeUri ?: ""))
 
@@ -272,13 +279,14 @@ class MainActivity : ComponentActivity() {
         applyConfigIntent(intent)
     }
 
-    /** adb 深链注入配置：am start --es server <url> --es token <令牌> */
+    /** adb 深链注入配置：am start --es server <url> --es token <令牌> --es subdir <子目录> */
     private fun applyConfigIntent(i: Intent?) {
         val server = i?.getStringExtra("server") ?: return
         val p = getSharedPreferences("filesync", Context.MODE_PRIVATE)
         p.edit()
             .putString("host", server.trim())
             .putString("token", (i.getStringExtra("token") ?: "").trim())
+            .putString("subdir", (i.getStringExtra("subdir") ?: "").trim())
             .commit()
     }
 }
@@ -536,6 +544,7 @@ private fun SettingsScreen(model: AppModel) {
                 val o = JSONObject(raw)
                 model.host = o.optString("server", model.host)
                 model.token = o.optString("token", model.token)
+                model.subDir = o.optString("subdir", model.subDir)
                 model.saveSettings()
             }
         }
@@ -582,6 +591,13 @@ private fun SettingsScreen(model: AppModel) {
                 visualTransformation = PasswordVisualTransformation(),
                 modifier = Modifier.fillMaxWidth(),
             )
+            OutlinedTextField(
+                value = model.subDir,
+                onValueChange = { model.subDir = it; model.saveSettings() },
+                label = { Text("云端子目录（可选，同步组）") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
             TextButton(onClick = {
                 val raw = clipboard.getText()?.text?.trim() ?: return@TextButton
                 if (raw.startsWith("{")) {
@@ -589,6 +605,7 @@ private fun SettingsScreen(model: AppModel) {
                         val o = JSONObject(raw)
                         model.host = o.optString("server", model.host)
                         model.token = o.optString("token", model.token)
+                        model.subDir = o.optString("subdir", model.subDir)
                         model.saveSettings()
                     }
                 } else if (raw.startsWith("http")) {

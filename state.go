@@ -27,6 +27,7 @@ type SyncState struct {
 	Version int                    `json:"version"`
 	Server  string                 `json:"server"`
 	Token   string                 `json:"token,omitempty"`
+	SubDir  string                 `json:"subdir,omitempty"`
 	Files   map[string]*StateEntry `json:"files"`
 }
 
