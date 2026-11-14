@@ -75,9 +75,9 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -142,6 +142,7 @@ import com.filesync.app.util.sha256Hex
 import io.noties.markwon.AbstractMarkwonPlugin
 import io.noties.markwon.Markwon
 import io.noties.markwon.MarkwonSpansFactory
+import io.noties.markwon.MarkwonVisitor
 import io.noties.markwon.core.spans.LastLineSpacingSpan
 import io.noties.markwon.ext.strikethrough.StrikethroughPlugin
 import io.noties.markwon.ext.tables.TablePlugin
@@ -149,6 +150,7 @@ import io.noties.markwon.ext.tasklist.TaskListPlugin
 import io.noties.markwon.html.HtmlPlugin
 import io.noties.markwon.linkify.LinkifyPlugin
 import org.commonmark.node.Paragraph
+import org.commonmark.node.SoftLineBreak
 import org.json.JSONArray
 import java.io.File
 import kotlin.math.max
@@ -464,7 +466,7 @@ class AppModel(val context: Context) {
 
     fun api(): ServerApi = HttpServerApi(serverUrl, token.trim(), subDir.trim())
 
-    /** 全局唯一 Markwon（官方建议单例复用）：完整插件集 + 段落间距（官方 Recipes 方案）。 */
+    /** 全局唯一 Markwon（官方建议单例复用）：完整插件集 + 段落间距 + Obsidian 式换行。 */
     val markwon: Markwon by lazy {
         val density = context.resources.displayMetrics.density
         Markwon.builder(context)
@@ -477,6 +479,15 @@ class AppModel(val context: Context) {
                 override fun configureSpansFactory(builder: MarkwonSpansFactory.Builder) {
                     val spacing = (8 * density).toInt()
                     builder.addFactory(Paragraph::class.java) { _, _ -> LastLineSpacingSpan(spacing) }
+                }
+
+                // 段落内单个换行渲染为真实换行（Obsidian 默认行为）。
+                // CorePlugin 的 visitor 对 SoftLineBreak append 空格（CommonMark 规范
+                // 默认折叠软换行），必须覆盖 visitor 而非 spansFactory
+                override fun configureVisitor(builder: MarkwonVisitor.Builder) {
+                    builder.on(SoftLineBreak::class.java) { visitor, _ ->
+                        visitor.builder().append('\n')
+                    }
                 }
             })
             .build()
@@ -822,8 +833,8 @@ private fun MainScreen(model: AppModel) {
                         DropdownMenu(
                             expanded = menuOpen,
                             onDismissRequest = { menuOpen = false },
-                            // M3 Menu 规范：容器 surfaceContainer + extra-small 形状 + 色调层级
-                            shape = MaterialTheme.shapes.extraSmall,
+                            // 谷歌风格：大圆角容器 + 色调层级
+                            shape = RoundedCornerShape(20.dp),
                             containerColor = MaterialTheme.colorScheme.surfaceContainer,
                             tonalElevation = 3.dp,
                             shadowElevation = 8.dp,
@@ -867,14 +878,20 @@ private fun MainScreen(model: AppModel) {
                                     },
                                 )
                             }
-                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                             DropdownMenuItem(
                                 text = {
-                                    Text(
-                                        "管理方案（设置）",
-                                        style = MaterialTheme.typography.labelLarge,
-                                        color = MaterialTheme.colorScheme.onSurface,
-                                    )
+                                    Column {
+                                        Text(
+                                            "管理方案（设置）",
+                                            style = MaterialTheme.typography.labelLarge,
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                        )
+                                        Text(
+                                            "添加 / 删除方案，切换同步目录",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
                                 },
                                 leadingIcon = {
                                     Icon(
@@ -1709,15 +1726,20 @@ private fun ActionRow(model: AppModel, rel: String) {
             enabled = !model.busy && model.treeUri != null,
             modifier = Modifier.fillMaxWidth().height(48.dp),
         ) { Text("同步此文件") }
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            TextButton(
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedButton(
                 onClick = { scope.launch { result = model.fetchRemote(rel) } },
                 enabled = !model.busy,
-            ) { Text("用远端覆盖本地") }
-            TextButton(
+                modifier = Modifier.weight(1f).height(40.dp),
+            ) { Text("用远端覆盖本地", style = MaterialTheme.typography.labelLarge) }
+            OutlinedButton(
                 onClick = { confirmPush = true },
                 enabled = !model.busy,
-            ) { Text("用本地覆盖远端") }
+                modifier = Modifier.weight(1f).height(40.dp),
+            ) { Text("用本地覆盖远端", style = MaterialTheme.typography.labelLarge) }
         }
         result?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
     }
