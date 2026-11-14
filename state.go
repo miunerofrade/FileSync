@@ -26,6 +26,7 @@ type StateEntry struct {
 type SyncState struct {
 	Version int                    `json:"version"`
 	Server  string                 `json:"server"`
+	Token   string                 `json:"token,omitempty"`
 	Files   map[string]*StateEntry `json:"files"`
 }
 

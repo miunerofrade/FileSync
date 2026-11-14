@@ -7,7 +7,7 @@ import java.net.URL
 import java.net.URLEncoder
 import org.json.JSONArray
 
-class HttpServerApi(baseUrl: String) : ServerApi {
+class HttpServerApi(baseUrl: String, private val token: String) : ServerApi {
 
     private val base = baseUrl.trimEnd('/')
 
@@ -22,6 +22,7 @@ class HttpServerApi(baseUrl: String) : ServerApi {
         return (URL(sb.toString()).openConnection() as HttpURLConnection).apply {
             connectTimeout = 5000
             readTimeout = 60000
+            if (token.isNotBlank()) setRequestProperty("Authorization", "Bearer $token")
         }
     }
 

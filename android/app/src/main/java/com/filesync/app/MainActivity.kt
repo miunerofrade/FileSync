@@ -73,6 +73,7 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -108,6 +109,7 @@ class AppModel(val context: Context) {
     var screen by mutableStateOf<Screen>(Screen.Main)
     var host by mutableStateOf(prefs.getString("host", "127.0.0.1") ?: "127.0.0.1")
     var port by mutableStateOf(prefs.getString("port", "8080") ?: "8080")
+    var token by mutableStateOf(prefs.getString("token", "") ?: "")
     var treeUri by mutableStateOf<String?>(prefs.getString("treeUri", null))
     var busy by mutableStateOf(false)
     var lastStats by mutableStateOf<String?>(null)
@@ -115,8 +117,13 @@ class AppModel(val context: Context) {
     var conflict by mutableStateOf<ConflictPrompt?>(null)
     val logLines = mutableStateListOf<String>()
 
+    /** host 可直接填完整 URL（https://IP:8443）；否则按 http://host:port 拼接。 */
     val serverUrl: String
-        get() = "http://${host.trim()}:${port.trim()}"
+        get() {
+            val h = host.trim()
+            if (h.startsWith("http://") || h.startsWith("https://")) return h.trimEnd('/')
+            return "http://$h:${port.trim()}"
+        }
 
     fun log(s: String) {
         logLines.add(s)
@@ -124,7 +131,11 @@ class AppModel(val context: Context) {
     }
 
     fun saveSettings() {
-        prefs.edit().putString("host", host.trim()).putString("port", port.trim()).apply()
+        prefs.edit()
+            .putString("host", host.trim())
+            .putString("port", port.trim())
+            .putString("token", token.trim())
+            .apply()
     }
 
     fun onTreePicked(uri: Uri) {
@@ -142,7 +153,7 @@ class AppModel(val context: Context) {
 
     fun localFiles(): SafFiles = SafFiles(context, Uri.parse(treeUri))
 
-    fun api(): ServerApi = HttpServerApi(serverUrl)
+    fun api(): ServerApi = HttpServerApi(serverUrl, token.trim())
 
     fun stateStore(): PrefsStateStore = PrefsStateStore(prefs, "state:" + (treeUri ?: ""))
 
@@ -455,15 +466,23 @@ private fun SettingsScreen(model: AppModel) {
             OutlinedTextField(
                 value = model.host,
                 onValueChange = { model.host = it; model.saveSettings() },
-                label = { Text("服务器 IP") },
+                label = { Text("服务器地址（IP 或 https://IP:端口）") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
             OutlinedTextField(
                 value = model.port,
                 onValueChange = { model.port = it; model.saveSettings() },
-                label = { Text("端口") },
+                label = { Text("端口（填完整 URL 时忽略）") },
                 singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                value = model.token,
+                onValueChange = { model.token = it; model.saveSettings() },
+                label = { Text("访问令牌") },
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
                 modifier = Modifier.fillMaxWidth(),
             )
             Row(

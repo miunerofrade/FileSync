@@ -19,17 +19,30 @@ import (
 const defaultServer = "http://127.0.0.1:8080"
 
 type Client struct {
-	base string
-	hc   *http.Client
+	base  string
+	token string
+	hc    *http.Client
 }
 
-func NewClient(server string) (*Client, error) {
+func NewClient(server, token string) (*Client, error) {
 	server = strings.TrimSuffix(server, "/")
 	u, err := url.Parse(server)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return nil, fmt.Errorf("无效的 --server 地址 %q（示例: http://127.0.0.1:8080）", server)
+		return nil, fmt.Errorf("无效的 --server 地址 %q（示例: https://124.222.6.120:8443）", server)
 	}
-	return &Client{base: server, hc: &http.Client{}}, nil
+	return &Client{base: server, token: strings.TrimSpace(token), hc: &http.Client{}}, nil
+}
+
+// newRequest 统一附加认证头。
+func (c *Client) newRequest(method, url string, body io.Reader) (*http.Request, error) {
+	req, err := http.NewRequest(method, url, body)
+	if err != nil {
+		return nil, err
+	}
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	return req, nil
 }
 
 type apiError struct {
@@ -58,7 +71,11 @@ func (c *Client) Ls(prefix string) ([]FileEntry, error) {
 	if prefix != "" {
 		v.Set("prefix", prefix)
 	}
-	resp, err := c.hc.Get(c.base + "/api/ls?" + v.Encode())
+	req, err := c.newRequest(http.MethodGet, c.base+"/api/ls?"+v.Encode(), nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.hc.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("连接服务端失败: %w", err)
 	}
@@ -84,7 +101,7 @@ func (c *Client) Put(wire string, size int64, sum string, body io.Reader, overwr
 	if ifMatch != "" {
 		v.Set("if-match", ifMatch)
 	}
-	req, err := http.NewRequest(http.MethodPut, c.base+"/api/put?"+v.Encode(), body)
+	req, err := c.newRequest(http.MethodPut, c.base+"/api/put?"+v.Encode(), body)
 	if err != nil {
 		return 0, err
 	}
@@ -117,7 +134,11 @@ func (c *Client) Get(wire, localPath string, overwrite bool) (int64, string, err
 		return 0, "", fmt.Errorf("本地文件已存在: %s（--overwrite 可覆盖）", localPath)
 	}
 
-	resp, err := c.hc.Get(c.base + "/api/get?" + url.Values{"path": {wire}}.Encode())
+	req, err := c.newRequest(http.MethodGet, c.base+"/api/get?"+url.Values{"path": {wire}}.Encode(), nil)
+	if err != nil {
+		return 0, "", err
+	}
+	resp, err := c.hc.Do(req)
 	if err != nil {
 		return 0, "", fmt.Errorf("下载请求失败: %w", err)
 	}
@@ -221,6 +242,7 @@ func putFile(c *Client, localPath, remoteArg string, overwrite bool) error {
 func cmdLs(args []string) {
 	fsSet := flag.NewFlagSet("ls", flag.ExitOnError)
 	server := fsSet.String("server", defaultServer, "服务端地址")
+	token := fsSet.String("token", os.Getenv("FILESYNC_TOKEN"), "访问令牌")
 	prefix := fsSet.String("prefix", "", "仅列出该远端子目录")
 	fsSet.Parse(args)
 	if fsSet.NArg() != 0 {
@@ -238,7 +260,7 @@ func cmdLs(args []string) {
 			}
 		}
 	}
-	c, err := NewClient(*server)
+	c, err := NewClient(*server, *token)
 	if err != nil {
 		fatal("%v", err)
 	}
@@ -261,6 +283,7 @@ func cmdLs(args []string) {
 func cmdPut(args []string) {
 	fsSet := flag.NewFlagSet("put", flag.ExitOnError)
 	server := fsSet.String("server", defaultServer, "服务端地址")
+	token := fsSet.String("token", os.Getenv("FILESYNC_TOKEN"), "访问令牌")
 	overwrite := fsSet.Bool("overwrite", false, "覆盖远端同名文件")
 	fsSet.Parse(args)
 	if fsSet.NArg() < 1 || fsSet.NArg() > 2 {
@@ -275,7 +298,7 @@ func cmdPut(args []string) {
 	if err != nil {
 		fatal("%v", err)
 	}
-	c, err := NewClient(*server)
+	c, err := NewClient(*server, *token)
 	if err != nil {
 		fatal("%v", err)
 	}
@@ -350,6 +373,7 @@ func cmdPut(args []string) {
 func cmdGet(args []string) {
 	fsSet := flag.NewFlagSet("get", flag.ExitOnError)
 	server := fsSet.String("server", defaultServer, "服务端地址")
+	token := fsSet.String("token", os.Getenv("FILESYNC_TOKEN"), "访问令牌")
 	overwrite := fsSet.Bool("overwrite", false, "覆盖本地同名文件")
 	fsSet.Parse(args)
 	if fsSet.NArg() < 1 || fsSet.NArg() > 2 {
@@ -363,7 +387,7 @@ func cmdGet(args []string) {
 	if local == "" {
 		local = filepath.Base(filepath.FromSlash(wire))
 	}
-	c, err := NewClient(*server)
+	c, err := NewClient(*server, *token)
 	if err != nil {
 		fatal("%v", err)
 	}

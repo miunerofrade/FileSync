@@ -18,6 +18,7 @@ import (
 func cmdInit(args []string) {
 	fsSet := flag.NewFlagSet("init", flag.ExitOnError)
 	server := fsSet.String("server", defaultServer, "服务端地址")
+	token := fsSet.String("token", os.Getenv("FILESYNC_TOKEN"), "访问令牌")
 	fsSet.Parse(args)
 	if fsSet.NArg() > 1 {
 		badUsage()
@@ -36,14 +37,14 @@ func cmdInit(args []string) {
 	if _, err := os.Stat(filepath.Join(absDir, stateFileName)); err == nil {
 		fatal("目录已初始化: %s（删除 %s 可重新初始化）", absDir, stateFileName)
 	}
-	c, err := NewClient(*server)
+	c, err := NewClient(*server, *token)
 	if err != nil {
 		fatal("%v", err)
 	}
 	if _, err := c.Ls(""); err != nil {
 		fatal("服务端不可用: %v", err)
 	}
-	st := &SyncState{Version: 1, Server: c.base, Files: map[string]*StateEntry{}}
+	st := &SyncState{Version: 1, Server: c.base, Token: strings.TrimSpace(*token), Files: map[string]*StateEntry{}}
 	if err := saveState(absDir, st); err != nil {
 		fatal("保存状态失败: %v", err)
 	}
@@ -85,6 +86,7 @@ type syncer struct {
 func cmdSync(args []string) {
 	fsSet := flag.NewFlagSet("sync", flag.ExitOnError)
 	keep := fsSet.String("keep", "", "冲突时自动保留的版本: local / remote")
+	token := fsSet.String("token", os.Getenv("FILESYNC_TOKEN"), "访问令牌（缺省用 init 时保存的）")
 	fsSet.Parse(args)
 	if fsSet.NArg() > 1 {
 		badUsage()
@@ -103,7 +105,11 @@ func cmdSync(args []string) {
 	if err != nil {
 		fatal("%v", err)
 	}
-	c, err := NewClient(st.Server)
+	tk := strings.TrimSpace(*token)
+	if tk == "" {
+		tk = st.Token
+	}
+	c, err := NewClient(st.Server, tk)
 	if err != nil {
 		fatal("%v", err)
 	}

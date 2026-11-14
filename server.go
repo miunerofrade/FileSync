@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -35,10 +36,11 @@ type FileEntry struct {
 
 // Server 把所有文件访问限制在数据根目录内。
 type Server struct {
-	root string // 绝对路径
+	root  string // 绝对路径
+	token string // 非空时要求 Bearer 认证
 }
 
-func NewServer(dataDir string) (*Server, error) {
+func NewServer(dataDir, token string) (*Server, error) {
 	root, err := filepath.Abs(dataDir)
 	if err != nil {
 		return nil, err
@@ -46,7 +48,7 @@ func NewServer(dataDir string) (*Server, error) {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return nil, err
 	}
-	return &Server{root: root}, nil
+	return &Server{root: root, token: strings.TrimSpace(token)}, nil
 }
 
 // fullPath 校验相对路径并转换为根目录内的绝对路径。
@@ -79,7 +81,17 @@ func (s *Server) Handler() http.Handler {
 			writeError(w, http.StatusNotFound, "未知接口")
 		}
 	})
-	return mux
+	// Token 认证：设置后所有 /api/* 请求必须携带 Authorization: Bearer <token>
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.token != "" {
+			got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+			if subtle.ConstantTimeCompare([]byte(got), []byte(s.token)) != 1 {
+				writeError(w, http.StatusUnauthorized, "认证失败")
+				return
+			}
+		}
+		mux.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) handlePing(w http.ResponseWriter, _ *http.Request) {
@@ -365,14 +377,20 @@ func fileSHA256(path string) (string, error) {
 
 func cmdServe(args []string) {
 	fsSet := flag.NewFlagSet("serve", flag.ExitOnError)
-	addr := fsSet.String("addr", "127.0.0.1:8080", "监听地址，如 127.0.0.1:8080 / :8080")
+	addr := fsSet.String("addr", "127.0.0.1:8080", "监听地址，如 127.0.0.1:8080 / :8443")
 	dataDir := fsSet.String("data-dir", "data", "文件存储根目录（缺省为运行目录下的 ./data）")
+	token := fsSet.String("token", os.Getenv("FILESYNC_TOKEN"), "访问令牌（非空时启用认证；缺省读 FILESYNC_TOKEN）")
+	certFile := fsSet.String("tls-cert", "", "TLS 证书路径（PEM，与 --tls-key 同时提供时启用 HTTPS）")
+	keyFile := fsSet.String("tls-key", "", "TLS 私钥路径")
 	fsSet.Parse(args)
 	if fsSet.NArg() != 0 {
 		badUsage()
 	}
+	if (*certFile == "") != (*keyFile == "") {
+		fatal("--tls-cert 与 --tls-key 必须同时提供")
+	}
 
-	srv, err := NewServer(*dataDir)
+	srv, err := NewServer(*dataDir, *token)
 	if err != nil {
 		fatal("初始化数据目录失败: %v", err)
 	}
@@ -380,7 +398,12 @@ func cmdServe(args []string) {
 	if err != nil {
 		fatal("监听 %s 失败: %v", *addr, err)
 	}
-	fmt.Printf("FileSync 服务端\n  监听:     %s\n  数据目录: %s\n  (Ctrl+C 退出)\n", ln.Addr(), srv.root)
+	scheme := "http"
+	if *certFile != "" {
+		scheme = "https"
+	}
+	fmt.Printf("FileSync 服务端\n  监听:     %s (%s)\n  数据目录: %s\n  认证:     %s\n  (Ctrl+C 退出)\n",
+		ln.Addr(), scheme, srv.root, map[bool]string{true: "已启用", false: "未启用"}[*token != ""])
 
 	httpSrv := &http.Server{
 		Handler:           srv.Handler(),
@@ -398,7 +421,13 @@ func cmdServe(args []string) {
 		_ = httpSrv.Shutdown(shutdownCtx)
 	}()
 
-	if err := httpSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		fatal("服务端错误: %v", err)
+	serveErr := error(nil)
+	if *certFile != "" {
+		serveErr = httpSrv.ServeTLS(ln, *certFile, *keyFile)
+	} else {
+		serveErr = httpSrv.Serve(ln)
+	}
+	if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+		fatal("服务端错误: %v", serveErr)
 	}
 }

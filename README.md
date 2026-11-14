@@ -110,3 +110,75 @@ Android App：
 - 删除不传播：需手动处理两端分歧（无 rm 命令）
 - 不做分块/断点续传；并发同步同一服务器未加锁
 - App 的 Markdown 预览基于 Markwon（唯一第三方依赖）；PDF 用内置 PdfRenderer
+
+## 第四阶段：公网部署（Linux VPS + HTTPS + Token）
+
+服务端以独立系统用户运行、监听高位端口（8443）、强制 Bearer Token 认证、
+使用 Let's Encrypt 签发的 IP 证书（shortlived 6 天，acme.sh 自动续签并重启服务）。
+
+### 服务端部署（Ubuntu 24.04 示例）
+
+```
+# 1. 构建并上传
+GOOS=linux GOARCH=amd64 go build -o filesync-linux .
+scp filesync-linux user@VPS:/tmp/filesync
+
+# 2. 安装（VPS 上）
+sudo useradd -r -s /usr/sbin/nologin filesync
+sudo mkdir -p /opt/filesync/certs /var/lib/filesync
+sudo mv /tmp/filesync /opt/filesync/filesync && sudo chmod 755 /opt/filesync/filesync
+echo "FILESYNC_TOKEN=$(openssl rand -hex 32)" | sudo tee /opt/filesync/filesync.env
+sudo chmod 600 /opt/filesync/filesync.env && sudo chown -R filesync:filesync /var/lib/filesync /opt/filesync
+```
+
+systemd 单元（/etc/systemd/system/filesync.service，见 deploy/）核心字段：
+
+```
+[Service]
+User=filesync
+EnvironmentFile=/opt/filesync/filesync.env
+ExecStart=/opt/filesync/filesync serve --addr :8443 --data-dir /var/lib/filesync \
+  --tls-cert /opt/filesync/certs/fullchain.pem --tls-key /opt/filesync/certs/privkey.pem
+Restart=on-failure
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/filesync
+```
+
+### IP 证书（Let's Encrypt shortlived，无需域名）
+
+LE 对 IP 签发 6 天短期证书，acme.sh 每天自动续签（剩余 <2/3 生命周期时续签），
+`--reloadcmd` 在续签后自动重启服务加载新证书。验证方式按环境选择：
+
+- 80 空闲 → `--standalone`（HTTP-01）
+- 80 被 nginx 占用 → `--webroot /var/www/html`（只放验证文件，不动 nginx 配置）
+- 443 空闲 → `--standalone --alpn`（TLS-ALPN-01；注意 tailscaled 等占用 tailscale0:443 时不可用）
+
+```
+curl -s https://get.acme.sh | sh -s -- --server letsencrypt   # 国内机器可本地克隆后安装
+~/.acme.sh/acme.sh --register-account --server letsencrypt
+~/.acme.sh/acme.sh --issue -d <VPS公网IP> --webroot /var/www/html \
+  --server letsencrypt --certificate-profile shortlived --days 3
+~/.acme.sh/acme.sh --install-cert -d <VPS公网IP> --ecc \
+  --fullchain-file /opt/filesync/certs/fullchain.pem \
+  --key-file /opt/filesync/certs/privkey.pem \
+  --reloadcmd "sudo systemctl restart filesync"
+```
+
+### 客户端配置
+
+CLI（Token 也可用环境变量 FILESYNC_TOKEN）：
+
+```
+./filesync init --server https://124.222.6.120:8443 --token <令牌> D:/notes
+./filesync sync
+```
+
+Android App 设置页：服务器地址填 `https://124.222.6.120:8443`，访问令牌填部署时生成的值。
+App 与 CLI 均使用系统证书库标准验证 TLS（不提供忽略证书错误的选项）。
+
+### 防扫描说明
+
+高位端口只降低被随机扫描的概率，不是安全边界；真正的防线是：强制 Bearer Token
+（常量时间比较）、标准 TLS 验证、系统用户 + systemd 权限加固（NoNewPrivileges /
+ProtectSystem）、独立数据目录。VPS 上已启用 fail2ban 的机器可进一步保护 SSH 层。
