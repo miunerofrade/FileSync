@@ -146,6 +146,7 @@ class AppModel(val context: Context) {
     var mainDir by mutableStateOf("")
     var viewMode by mutableStateOf("local")
     var selected by mutableStateOf<Set<String>>(emptySet())
+    var cloudSelected by mutableStateOf<Set<String>>(emptySet())
 
     var host by mutableStateOf(prefs.getString("host", "127.0.0.1") ?: "127.0.0.1")
     var port by mutableStateOf(prefs.getString("port", "8080") ?: "8080")
@@ -201,6 +202,7 @@ class AppModel(val context: Context) {
         screen = Screen.Main
         mainDir = ""
         selected = emptySet()
+        cloudSelected = emptySet()
     }
 
     fun localFiles(): SafFiles = SafFiles(context, Uri.parse(treeUri))
@@ -423,6 +425,7 @@ private fun MainScreen(model: AppModel) {
         onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
     }
     var cloudList by remember { mutableStateOf<List<RemoteFile>?>(null) }
+    var showBatchDeleteConfirm by remember { mutableStateOf(false) }
     LaunchedEffect(model.mainDir, model.refreshTick, model.treeUri) {
         entries = if (model.treeUri == null) {
             null
@@ -523,6 +526,20 @@ private fun MainScreen(model: AppModel) {
                         .height(44.dp),
                 ) { Text("同步选中 (${model.selected.size})") }
             }
+            AnimatedVisibility(
+                visible = model.cloudSelected.isNotEmpty() && model.viewMode == "cloud",
+                enter = expandVertically() + fadeIn(),
+                exit = shrinkVertically() + fadeOut(),
+            ) {
+                Button(
+                    onClick = { showBatchDeleteConfirm = true },
+                    enabled = !model.busy,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                        .height(44.dp),
+                ) { Text("删除云端选中 (${model.cloudSelected.size})") }
+            }
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -550,6 +567,18 @@ private fun MainScreen(model: AppModel) {
                                 else model.selected + curFiles.toSet()
                         },
                         enabled = curFiles.isNotEmpty(),
+                    ) { Text(if (allSel) "取消全选" else "全选") }
+                } else {
+                    Spacer(Modifier.weight(1f))
+                    val cloudFiles = (cloudList ?: emptyList()).map { it.path }
+                    val allSel = cloudFiles.isNotEmpty() && cloudFiles.all { it in model.cloudSelected }
+                    TextButton(
+                        onClick = {
+                            model.cloudSelected =
+                                if (allSel) model.cloudSelected - cloudFiles.toSet()
+                                else model.cloudSelected + cloudFiles.toSet()
+                        },
+                        enabled = cloudFiles.isNotEmpty(),
                     ) { Text(if (allSel) "取消全选" else "全选") }
                 }
             }
@@ -643,6 +672,45 @@ private fun MainScreen(model: AppModel) {
                 }
             }
         }
+    }
+    if (showBatchDeleteConfirm) {
+        val targets = model.cloudSelected
+        AlertDialog(
+            onDismissRequest = { showBatchDeleteConfirm = false },
+            title = { Text("删除云端文件") },
+            text = {
+                Text(
+                    "将只删除云端的 ${targets.size} 个文件：\n" +
+                        targets.sorted().joinToString("\n") { "· $it" } +
+                        "\n\n本地文件不会被改动。",
+                )
+            },
+            confirmButton = {
+                TextButton({
+                    showBatchDeleteConfirm = false
+                    scope.launch {
+                        val failed = mutableListOf<String>()
+                        var ok = 0
+                        withContext(Dispatchers.IO) {
+                            for (p in targets) {
+                                try {
+                                    if (model.api().delete(p)) ok++ else failed.add(p)
+                                } catch (e: Exception) {
+                                    failed.add(p)
+                                }
+                            }
+                        }
+                        model.cloudSelected = emptySet()
+                        model.refreshTick++
+                        model.log(
+                            "批量删除云端: 成功 $ok" +
+                                if (failed.isNotEmpty()) ", 失败 ${failed.size}: ${failed.joinToString("、")}" else "",
+                        )
+                    }
+                }) { Text("删除") }
+            },
+            dismissButton = { TextButton({ showBatchDeleteConfirm = false }) { Text("取消") } },
+        )
     }
 }
 
@@ -1076,6 +1144,13 @@ private fun CloudFileList(model: AppModel, refreshTick: Int, modifier: Modifier 
                     Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    Checkbox(
+                        checked = e.path in model.cloudSelected,
+                        onCheckedChange = { on ->
+                            model.cloudSelected =
+                                if (on) model.cloudSelected + e.path else model.cloudSelected - e.path
+                        },
+                    )
                     Column(Modifier.weight(1f)) {
                         Text(e.path, style = MaterialTheme.typography.bodyLarge)
                         Text(formatBytes(e.size), style = MaterialTheme.typography.bodySmall)
