@@ -23,9 +23,6 @@ interface LocalFiles {
     /** 枚举本地文件并绑定 handle；同名多文档时该条目 ambiguous=true。 */
     fun list(): List<LocalEntry>
 
-    /** 基于扫描时绑定的 handle 计算哈希，避免按名字二次定位。 */
-    fun hash(e: LocalEntry): String?
-
     fun read(e: LocalEntry): ByteArray?
 
     /** 原子写入：临时文件（时间戳命名）+ 删旧目标 + 改名。目标名歧义时拒绝写入。 */

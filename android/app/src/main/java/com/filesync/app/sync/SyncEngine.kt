@@ -132,14 +132,16 @@ class SyncEngine(
     }
 
     private suspend fun handlePresent(ctx: Ctx, rel: String, le: LocalEntry, re: RemoteFile, base: StateEntry?) {
-        val lh = local.hash(le) ?: throw Exception("本地文件不可读")
+        // 同一次读取作为决策、上传与基线的唯一数据源（消除多次 SAF 读取不一致）
+        val data = local.read(le) ?: throw Exception("本地文件不可读")
+        val lh = sha256Hex(data)
         println(
             "FileSyncSync decision $rel lh=${lh.take(12)} re=${re.sha256.take(12)} " +
                 "base=${base?.sha256?.take(12) ?: "none"}",
         )
         // 决策入口：两端内容一致 → 无论基线是什么状态都直接收敛（自愈过期/损坏的基线）
         if (lh == re.sha256) {
-            ctx.record(rel, lh, le.size)
+            ctx.record(rel, lh, data.size.toLong())
             ctx.unchanged++
             log("已一致 $rel")
             return
@@ -147,7 +149,7 @@ class SyncEngine(
         val b = base
         if (b == null) {
             // 首次遇到两端内容不同 → 按冲突处理
-            conflictChoice(ctx, rel, le, lh, re)
+            conflictChoice(ctx, rel, le, lh, re, data)
             return
         }
         // 此处必然 lh != re，两端至少有一端相对基线发生了变化
@@ -155,12 +157,9 @@ class SyncEngine(
         val serverChanged = re.sha256 != b.sha256
         when {
             localChanged && !serverChanged -> {
-                // 基线哈希必须与实际上传的字节同源，否则下次同步永远判不一致
-                val data = local.read(le) ?: throw Exception("本地文件不可读")
-                val sum = sha256Hex(data)
                 when (server.put(rel, data, true, b.sha256)) {
                     PutStatus.CREATED -> {
-                        ctx.record(rel, sum, data.size.toLong())
+                        ctx.record(rel, lh, data.size.toLong())
                         ctx.uploaded++
                         log("上传 $rel")
                     }
@@ -176,7 +175,7 @@ class SyncEngine(
                 ctx.downloaded++
                 log("下载 $rel")
             }
-            else -> conflictChoice(ctx, rel, le, lh, re)
+            else -> conflictChoice(ctx, rel, le, lh, re, data)
         }
     }
 
@@ -203,11 +202,17 @@ class SyncEngine(
         ctx.record(rel, dl.second, re.size)
     }
 
-    private suspend fun conflictChoice(ctx: Ctx, rel: String, le: LocalEntry, lh: String, re: RemoteFile) {
+    private suspend fun conflictChoice(
+        ctx: Ctx,
+        rel: String,
+        le: LocalEntry,
+        lh: String,
+        re: RemoteFile,
+        data: ByteArray,
+    ) {
         ctx.save()
         when (ask(ConflictInfo(rel, le.size, lh, re.size, re.sha256, re.modTime))) {
             "local" -> {
-                val data = local.read(le) ?: throw Exception("本地文件不可读")
                 if (server.put(rel, data, true, null) != PutStatus.CREATED) throw Exception("上传被拒绝")
                 ctx.record(rel, sha256Hex(data), data.size.toLong())
                 ctx.resolved++

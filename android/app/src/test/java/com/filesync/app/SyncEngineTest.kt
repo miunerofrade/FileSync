@@ -24,8 +24,6 @@ class FakeLocal(initial: Map<String, String> = emptyMap()) : LocalFiles {
         LocalEntry(it.key, it.value.size.toLong(), null, it.key in ambiguousPaths)
     }
 
-    override fun hash(e: LocalEntry) = files[e.path]?.let { sha256Hex(it) }
-
     override fun read(e: LocalEntry) = files[e.path]
 
     override fun write(rel: String, data: ByteArray): Boolean {

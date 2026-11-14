@@ -13,11 +13,12 @@ import org.junit.Test
 class ServerIntegrationTest {
 
     private val base: String? = System.getenv("FILESYNC_TEST_SERVER")
+    private val testToken: String = System.getenv("FILESYNC_TEST_TOKEN") ?: ""
 
     @Test
     fun `与 Go 服务端集成`() {
         assumeTrue(base != null && base.isNotBlank())
-        val api = HttpServerApi(base!!)
+        val api = HttpServerApi(base!!, testToken)
         assertTrue("ping 应成功", api.ping())
 
         val uniq = "android-it-" + System.currentTimeMillis()

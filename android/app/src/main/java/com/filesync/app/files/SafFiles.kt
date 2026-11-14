@@ -50,27 +50,45 @@ class SafFiles(private val context: Context, private val treeUri: Uri) : LocalFi
 
     override fun list(): List<LocalEntry> {
         val out = ArrayList<LocalEntry>()
-        fun walk(dir: DocumentFile, prefix: String) {
-            val groups = dir.listFiles().filter { it.name != null }.groupBy { it.name!! }
-            for ((name, group) in groups) {
+        fun walk(dir: DocumentFile, prefix: String, parentUri: Uri) {
+            val children = dir.listFiles().filter { it.name != null }
+            android.util.Log.w(
+                "FileSyncDiag",
+                "listDir parent=${parentUri.lastPathSegment} entries=${children.size}",
+            )
+            for ((name, group) in groups(children)) {
                 if (isTempName(name)) continue
-                if (prefix.isEmpty() && name == ".filesync.json") continue
+                if (prefix.isEmpty() && (name == ".filesync.json" || name == "filesync-client.json")) continue
                 val rel = if (prefix.isEmpty()) name else "$prefix/$name"
                 val files = group.filter { it.isFile }
                 val dirs = group.filter { it.isDirectory }
                 when {
                     // 同名多个文档：SAF 无法确定该操作哪一个，标记歧义跳过
-                    files.size > 1 || dirs.size > 1 ->
+                    files.size > 1 || dirs.size > 1 -> {
+                        android.util.Log.w(
+                            "FileSyncDiag",
+                            "ambiguous rel=$rel docs=${files.size} dirs=${dirs.size}",
+                        )
                         out.add(LocalEntry(rel, 0, null, ambiguous = true))
-                    files.size == 1 ->
-                        out.add(LocalEntry(rel, files[0].length(), files[0].uri))
-                    dirs.size == 1 -> walk(dirs[0], rel)
+                    }
+                    files.size == 1 -> {
+                        val f = files[0]
+                        android.util.Log.w(
+                            "FileSyncDiag",
+                            "entry rel=$rel docId=${f.uri.lastPathSegment} size=${f.length()}",
+                        )
+                        out.add(LocalEntry(rel, f.length(), f.uri))
+                    }
+                    dirs.size == 1 -> walk(dirs[0], rel, dirs[0].uri)
                 }
             }
         }
-        walk(rootDoc(), "")
+        walk(rootDoc(), "", rootDoc().uri)
         return out
     }
+
+    private fun groups(children: List<DocumentFile>): Map<String, List<DocumentFile>> =
+        children.groupBy { it.name!! }
 
     /** 浏览界面用的单层列表。 */
     fun listDir(relDir: String): List<DirEntry> {
@@ -78,6 +96,7 @@ class SafFiles(private val context: Context, private val treeUri: Uri) : LocalFi
         val groups = dir.listFiles().filter { it.name != null }.groupBy { it.name!! }
         return groups.map { (name, group) ->
             if (isTempName(name)) return@map null
+            if (name == "filesync-client.json") return@map null
             val f = group.first()
             val ambiguous = group.size > 1
             when {
@@ -105,21 +124,17 @@ class SafFiles(private val context: Context, private val treeUri: Uri) : LocalFi
     fun uriFor(rel: String): Uri? =
         entryFor(rel)?.takeIf { !it.ambiguous }?.handle as? Uri
 
-    override fun hash(e: LocalEntry): String? = try {
-        val uri = e.handle as? Uri ?: return null
-        resolver.openInputStream(uri)?.use { ins ->
-            val md = MessageDigest.getInstance("SHA-256")
-            pump(ins, md)
-            sha256Hex(md.digest())
-        }
-    } catch (_: Exception) {
-        null
-    }
-
     override fun read(e: LocalEntry): ByteArray? = try {
-        (e.handle as? Uri)?.let { uri ->
-            resolver.openInputStream(uri)?.use { it.readBytes() }
-        }
+        val uri = e.handle as? Uri ?: return null
+        val b1 = resolver.openInputStream(uri)?.use { it.readBytes() }
+        val b2 = resolver.openInputStream(uri)?.use { it.readBytes() }
+        // 一致性诊断：同一 URI 连续两次读取的字节对比（只打标识与哈希，不打内容）
+        android.util.Log.w(
+            "FileSyncDiag",
+            "read ${e.path} docId=${uri.lastPathSegment} len1=${b1?.size} sha1=${b1?.let { sha256Hex(it) }?.take(12)} " +
+                "len2=${b2?.size} sha2=${b2?.let { sha256Hex(it) }?.take(12)}",
+        )
+        b1
     } catch (_: Exception) {
         null
     }
