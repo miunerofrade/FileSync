@@ -245,7 +245,7 @@ class AppModel(val context: Context) {
     /** 执行同步并把结果写入按钮态与 Snackbar。 */
     suspend fun runAndReport(sync: suspend () -> SyncEngine.Stats?) {
         val stats = sync()
-        val issues = stats?.let { it.skipped + it.failed } ?: 1
+        val issues = stats?.let { it.skipped + it.warnings + it.failed } ?: 1
         val r = when {
             stats == null -> SyncResult(SyncOutcome.Fail, "同步失败", 1)
             issues > 0 -> SyncResult(SyncOutcome.Issues, summarizeStats(stats), issues)
