@@ -220,6 +220,9 @@ class AppModel(val context: Context) {
     var selected by mutableStateOf<Set<String>>(emptySet())
     var cloudSelected by mutableStateOf<Set<String>>(emptySet())
 
+    // 云端视图的目录导航位置（跨刷新保留，方案/目录切换时归零）
+    var cloudDir by mutableStateOf("")
+
     // 列表滚动位置与条目缓存跨页面保留：预览返回后不再回到顶部；
     // 仅在 目录/方案 切换（key 变化）时清空并回到顶部
     val listState = LazyListState()
@@ -422,6 +425,7 @@ class AppModel(val context: Context) {
         subDir = p.subDir
         mainDir = ""
         selected = emptySet()
+        cloudDir = ""
         refreshTick++
         saveProfiles()
     }
@@ -434,6 +438,7 @@ class AppModel(val context: Context) {
         subDir = ""
         mainDir = ""
         selected = emptySet()
+        cloudDir = ""
         saveProfiles()
         refreshTick++
     }
@@ -449,6 +454,7 @@ class AppModel(val context: Context) {
         }
         mainDir = ""
         selected = emptySet()
+        cloudDir = ""
         saveProfiles()
         refreshTick++
     }
@@ -533,6 +539,7 @@ class AppModel(val context: Context) {
         screen = Screen.Main
         mainDir = ""
         selected = emptySet()
+        cloudDir = ""
         cloudSelected = emptySet()
     }
 

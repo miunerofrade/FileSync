@@ -59,6 +59,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -180,6 +182,11 @@ import org.json.JSONObject
 internal fun MainScreen(model: AppModel) {
     val scope = rememberCoroutineScope()
     val lifecycleOwner = LocalLifecycleOwner.current
+    val pagerState = rememberPagerState(initialPage = if (model.viewMode == "cloud") 1 else 0) { 2 }
+    // 页面滑动同步回 viewMode（底部按钮/全选逻辑依赖它）
+    LaunchedEffect(pagerState.currentPage) {
+        model.viewMode = if (pagerState.currentPage == 1) "cloud" else "local"
+    }
     DisposableEffect(lifecycleOwner, model.treeUri) {
         val obs = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) model.refreshTick++
@@ -454,12 +461,12 @@ internal fun MainScreen(model: AppModel) {
             ) {
                 FilterChip(
                     selected = model.viewMode == "local",
-                    onClick = { model.viewMode = "local" },
+                    onClick = { scope.launch { pagerState.animateScrollToPage(0) } },
                     label = { Text("本地") },
                 )
                 FilterChip(
                     selected = model.viewMode == "cloud",
-                    onClick = { model.viewMode = "cloud" },
+                    onClick = { scope.launch { pagerState.animateScrollToPage(1) } },
                     label = { Text("云端") },
                 )
                 if (model.viewMode == "local") {
@@ -489,90 +496,96 @@ internal fun MainScreen(model: AppModel) {
                     ) { Text(if (allSel) "取消全选" else "全选") }
                 }
             }
-            if (model.viewMode == "cloud") {
-                CloudFileList(
-                    model = model,
-                    refreshTick = model.refreshTick,
-                    modifier = Modifier.weight(1f).fillMaxWidth(),
-                )
-                return@Column
-            }
-            val e = model.mainEntries
-            when {
-                e == null -> SkeletonList(8, Modifier.weight(1f).fillMaxWidth())
-                else -> LazyColumn(state = model.listState, modifier = Modifier.weight(1f).fillMaxWidth()) {
-                        items(e) { en ->
-                            val rel = joinDir(model.mainDir, en.name)
-                            if (en.isDir) {
-                                Row(
-                                    Modifier
-                                        .fillMaxWidth()
-                                        .animateItem()
-                                        .clickable { model.mainDir = rel }
-                                        .padding(horizontal = 8.dp, vertical = 2.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                Checkbox(
-                                    checked = rel in model.selected,
-                                    onCheckedChange = { on ->
-                                        model.selected =
-                                            if (on) model.selected + rel else model.selected - rel
-                                    },
-                                )
-                                Text("▸ ", color = MaterialTheme.colorScheme.primary)
-                                Text(en.name, style = MaterialTheme.typography.bodyLarge)
-                            }
-                        } else {
-                            Row(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .animateItem()
-                                    .clickable { model.screen = Screen.Preview(rel) }
-                                    .padding(horizontal = 8.dp, vertical = 2.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Checkbox(
-                                    checked = rel in model.selected,
-                                    onCheckedChange = { on ->
-                                        model.selected =
-                                            if (on) model.selected + rel else model.selected - rel
-                                    },
-                                )
-                                Column(Modifier.weight(1f)) {
-                                    Text(
-                                        en.name,
-                                        style = MaterialTheme.typography.bodyLarge,
-                                        modifier = Modifier.fileSharedBounds("file-$rel"),
-                                    )
-                                    Text(
-                                        formatBytes(en.size),
-                                        style = MaterialTheme.typography.bodySmall,
-                                    )
-                                }
-                            }
-                        }
-                    }
-                    if (model.logLines.isNotEmpty()) {
-                        item {
-                            AnimatedVisibility(
-                                visible = true,
-                                enter = fadeIn(tween(200)),
-                            ) {
-                                Card(
-                                    Modifier
-                                        .fillMaxWidth()
-                                        .padding(12.dp),
-                                ) {
-                                    Column(
-                                        Modifier.padding(12.dp),
-                                        verticalArrangement = Arrangement.spacedBy(2.dp),
-                                    ) {
-                                        model.logLines.takeLast(10).forEach {
-                                            Text(
-                                                it,
-                                                style = MaterialTheme.typography.bodySmall,
-                                                fontFamily = FontFamily.Monospace,
+            HorizontalPager(
+                state = pagerState,
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                // 进入子目录后禁用横滑（此时横滑留给未来的其他手势，避免误切换）
+                userScrollEnabled = model.mainDir.isEmpty(),
+                beyondViewportPageCount = 1,
+            ) { page ->
+                when (page) {
+                    1 -> CloudFileList(
+                        model = model,
+                        refreshTick = model.refreshTick,
+                        cloudDir = model.cloudDir,
+                        onDirChange = { model.cloudDir = it },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                    else -> {
+                        val e = model.mainEntries
+                        when {
+                            e == null -> SkeletonList(8, Modifier.fillMaxSize())
+                            else -> LazyColumn(state = model.listState, modifier = Modifier.fillMaxSize()) {
+                                items(e) { en ->
+                                    val rel = joinDir(model.mainDir, en.name)
+                                    if (en.isDir) {
+                                        Row(
+                                            Modifier
+                                                .fillMaxWidth()
+                                                .animateItem()
+                                                .clickable { model.mainDir = rel }
+                                                .padding(horizontal = 8.dp, vertical = 2.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            Checkbox(
+                                                checked = rel in model.selected,
+                                                onCheckedChange = { on ->
+                                                    model.selected =
+                                                        if (on) model.selected + rel else model.selected - rel
+                                                },
                                             )
+                                            Text("▸ ", color = MaterialTheme.colorScheme.primary)
+                                            Text(en.name, style = MaterialTheme.typography.bodyLarge)
+                                        }
+                                    } else {
+                                        Row(
+                                            Modifier
+                                                .fillMaxWidth()
+                                                .animateItem()
+                                                .clickable { model.screen = Screen.Preview(rel) }
+                                                .padding(horizontal = 8.dp, vertical = 2.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                        ) {
+                                            Checkbox(
+                                                checked = rel in model.selected,
+                                                onCheckedChange = { on ->
+                                                    model.selected =
+                                                        if (on) model.selected + rel else model.selected - rel
+                                                },
+                                            )
+                                            Column(Modifier.weight(1f)) {
+                                                Text(
+                                                    en.name,
+                                                    style = MaterialTheme.typography.bodyLarge,
+                                                    modifier = Modifier.fileSharedBounds("file-$rel"),
+                                                )
+                                                Text(
+                                                    formatBytes(en.size),
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                                if (model.logLines.isNotEmpty()) {
+                                    item {
+                                        Card(
+                                            Modifier
+                                                .fillMaxWidth()
+                                                .padding(12.dp),
+                                        ) {
+                                            Column(
+                                                Modifier.padding(12.dp),
+                                                verticalArrangement = Arrangement.spacedBy(2.dp),
+                                            ) {
+                                                model.logLines.takeLast(10).forEach {
+                                                    Text(
+                                                        it,
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        fontFamily = FontFamily.Monospace,
+                                                    )
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -675,7 +688,13 @@ private fun SkeletonList(rows: Int, modifier: Modifier = Modifier) {
     }
 }
 @Composable
-private fun CloudFileList(model: AppModel, refreshTick: Int, modifier: Modifier = Modifier) {
+private fun CloudFileList(
+    model: AppModel,
+    refreshTick: Int,
+    cloudDir: String,
+    onDirChange: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
     var list by remember { mutableStateOf<List<RemoteFile>?>(null) }
     var confirmDelete by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
@@ -688,25 +707,79 @@ private fun CloudFileList(model: AppModel, refreshTick: Int, modifier: Modifier 
     when {
         l == null -> SkeletonList(6, modifier)
         l.isEmpty() -> Box(modifier, contentAlignment = Alignment.Center) { Text("云端为空") }
-        else -> LazyColumn(modifier) {
-            items(l) { e ->
-                Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Checkbox(
-                        checked = e.path in model.cloudSelected,
-                        onCheckedChange = { on ->
-                            model.cloudSelected =
-                                if (on) model.cloudSelected + e.path else model.cloudSelected - e.path
-                        },
-                    )
-                    Column(Modifier.weight(1f)) {
-                        Text(e.path, style = MaterialTheme.typography.bodyLarge)
-                        Text(formatBytes(e.size), style = MaterialTheme.typography.bodySmall)
+        else -> {
+            // 按当前云端目录分层：直接子目录 + 当前目录下的文件（目录在前）
+            val prefix = if (cloudDir.isEmpty()) "" else "$cloudDir/"
+            val dirs = l.map { it.path }
+                .filter { it.length > prefix.length && it.startsWith(prefix) }
+                .map { it.removePrefix(prefix).substringBefore('/') }
+                .distinct()
+                .sorted()
+            val files = l.filter { parentDir(it.path) == cloudDir }.sortedBy { it.path }
+            if (dirs.isEmpty() && files.isEmpty()) {
+                Box(modifier, contentAlignment = Alignment.Center) { Text("此目录为空") }
+                return
+            }
+            Column(modifier) {
+                if (cloudDir.isNotEmpty()) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { onDirChange(parentDir(cloudDir)) }
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                            contentDescription = null,
+                            modifier = Modifier.graphicsLayer { rotationZ = 180f },
+                        )
+                        Text("上一级", style = MaterialTheme.typography.bodyLarge)
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            cloudDir,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
-                    IconButton(onClick = { confirmDelete = e.path }) {
-                        Icon(Icons.Default.Delete, contentDescription = "删除云端文件 ${e.path}")
+                }
+                LazyColumn {
+                    items(dirs) { d ->
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable { onDirChange(joinDir(cloudDir, d)) }
+                                .padding(horizontal = 20.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text("▸ ", color = MaterialTheme.colorScheme.primary)
+                            Text(d, style = MaterialTheme.typography.bodyLarge)
+                        }
+                    }
+                    items(files, key = { it.path }) { e ->
+                        Row(
+                            Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Checkbox(
+                                checked = e.path in model.cloudSelected,
+                                onCheckedChange = { on ->
+                                    model.cloudSelected =
+                                        if (on) model.cloudSelected + e.path
+                                        else model.cloudSelected - e.path
+                                },
+                            )
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    e.path.substringAfterLast('/'),
+                                    style = MaterialTheme.typography.bodyLarge,
+                                )
+                                Text(formatBytes(e.size), style = MaterialTheme.typography.bodySmall)
+                            }
+                            IconButton(onClick = { confirmDelete = e.path }) {
+                                Icon(Icons.Default.Delete, contentDescription = "删除云端文件 ${e.path}")
+                            }
+                        }
                     }
                 }
             }
