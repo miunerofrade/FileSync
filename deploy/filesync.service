@@ -1,0 +1,18 @@
+[Unit]
+Description=FileSync server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=filesync
+EnvironmentFile=/opt/filesync/filesync.env
+ExecStart=/opt/filesync/filesync serve --addr :8443 --data-dir /var/lib/filesync --tls-cert /opt/filesync/certs/fullchain.pem --tls-key /opt/filesync/certs/privkey.pem
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/filesync
+
+[Install]
+WantedBy=multi-user.target
