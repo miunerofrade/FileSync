@@ -23,6 +23,7 @@ jobs:
           - { goos: linux,   goarch: arm64, out: filesync-linux-arm64 }
           - { goos: windows, goarch: amd64, out: filesync-windows-amd64.exe }
           - { goos: darwin,  goarch: arm64, out: filesync-macos-arm64 }
+          - { goos: darwin,  goarch: amd64, out: filesync-macos-amd64 }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
