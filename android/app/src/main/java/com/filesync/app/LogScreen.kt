@@ -44,7 +44,7 @@ fun LogScreen(model: AppModel) {
             TopAppBar(
                 title = { Text("同步日志") },
                 navigationIcon = {
-                    IconButton(onClick = { model.screen = Screen.Main }) {
+                    IconButton(onClick = { model.screen = Screen.Settings }) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
                     }
                 },

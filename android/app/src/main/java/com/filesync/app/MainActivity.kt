@@ -187,6 +187,13 @@ data class LogEntry(val time: Long, val message: String)
 
 internal const val LOG_MAX = 100
 
+/** 屏幕层级深度（主屏 0 / 一级页 1 / 日志 2），返回手势与转场方向按深度判断。 */
+internal fun screenDepth(s: Screen) = when (s) {
+    Screen.Main -> 0
+    Screen.Settings, is Screen.Preview -> 1
+    Screen.Log -> 2
+}
+
 /** 共享元素转场作用域（文件名从列表"飞入"预览页标题）。 */
 @OptIn(ExperimentalSharedTransitionApi::class)
 val LocalSharedTransitionScope = compositionLocalOf<SharedTransitionScope?> { null }
@@ -490,6 +497,15 @@ class AppModel(val context: Context) {
         backAnimatable.animateTo(0f, tween(150))
     }
 
+    /** 按层级返回：日志→设置，预览/设置→主屏；主屏内则是退出子目录 */
+    fun goBack() {
+        when (screen) {
+            Screen.Main -> mainDir = parentDir(mainDir)
+            Screen.Log -> screen = Screen.Settings
+            else -> screen = Screen.Main
+        }
+    }
+
     fun setPredictiveBackEnabled(v: Boolean) {
         predictiveBack = v
         prefs.edit().putBoolean("predictiveBack", v).commit()
@@ -730,11 +746,7 @@ fun FileSyncApp() {
                 PredictiveBackHandler(enabled = canGoBack) { backEvent ->
                     try {
                         backEvent.collect { e -> model.backAnimatable.snapTo(e.progress) }
-                        if (model.screen != Screen.Main) {
-                            model.screen = Screen.Main
-                        } else {
-                            model.mainDir = parentDir(model.mainDir)
-                        }
+                        model.goBack()
                         model.settleBackProgress()
                     } catch (_: CancellationException) {
                         // 取消时当前协程已被取消，恢复动画放到存活的作用域里跑
@@ -744,11 +756,7 @@ fun FileSyncApp() {
             } else {
                 // 关闭预测性返回：立即切换
                 BackHandler(enabled = canGoBack) {
-                    if (model.screen != Screen.Main) {
-                        model.screen = Screen.Main
-                    } else {
-                        model.mainDir = parentDir(model.mainDir)
-                    }
+                    model.goBack()
                 }
             }
             SharedTransitionLayout {
@@ -756,8 +764,8 @@ fun FileSyncApp() {
                     AnimatedContent(
                         targetState = model.screen,
                         transitionSpec = {
-                            // 返回（目标为主屏）：内容向右推回；前进：从右滑入
-                            val goingBack = targetState == Screen.Main
+                            // 返回（深度变小，如 日志→设置）：内容向右推回；前进：从右滑入
+                            val goingBack = screenDepth(targetState) < screenDepth(initialState)
                             if (goingBack) {
                                 (fadeIn(tween(150)) + slideInHorizontally(tween(150)) { -it / 12 })
                                     .togetherWith(fadeOut(tween(120)) + slideOutHorizontally(tween(120)) { it / 12 })
