@@ -70,6 +70,7 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Refresh
@@ -92,6 +93,9 @@ import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -166,6 +170,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -227,6 +232,7 @@ internal fun MainScreen(model: AppModel) {
         else -> MaterialTheme.colorScheme.onPrimary
     }
     Scaffold(
+        snackbarHost = { SnackbarHost(model.snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = {
@@ -367,11 +373,13 @@ internal fun MainScreen(model: AppModel) {
                         selectionSync -> {
                             val sel = model.selected
                             scope.launch {
-                                model.runSync { p -> sel.any { s -> p == s || p.startsWith("$s/") } }
+                                model.runAndReport {
+                                    model.runSync { p -> sel.any { s -> p == s || p.startsWith("$s/") } }
+                                }
                                 model.selected = emptySet()
                             }
                         }
-                        else -> scope.launch { model.runSync(null) }
+                        else -> scope.launch { model.runAndReport { model.runSync(null) } }
                     }
                 },
                 enabled = !model.busy,
@@ -397,17 +405,37 @@ internal fun MainScreen(model: AppModel) {
                     Spacer(Modifier.width(12.dp))
                     Text("同步中")
                 } else {
-                    Icon(Icons.Default.Refresh, null)
-                    Spacer(Modifier.width(12.dp))
-                    AnimatedContent(
-                        targetState = when {
-                            deleteMode -> "删除云端选中的 ${model.cloudSelected.size} 个文件"
-                            selectionSync -> "同步选中的 ${model.selected.size} 个文件"
-                            else -> "全量同步"
-                        },
-                        transitionSpec = { fadeIn(tween(120)) togetherWith fadeOut(tween(120)) },
-                        label = "btnLabel",
-                    ) { Text(it) }
+                    val r = model.syncResult
+                    when {
+                        r != null && r.outcome == SyncOutcome.Success -> {
+                            Icon(Icons.Default.Check, null)
+                            Spacer(Modifier.width(12.dp))
+                            Text("同步成功")
+                        }
+                        r != null && r.outcome == SyncOutcome.Fail -> {
+                            Icon(Icons.Default.Warning, null)
+                            Spacer(Modifier.width(12.dp))
+                            Text("同步失败")
+                        }
+                        r != null && r.outcome == SyncOutcome.Issues -> {
+                            Icon(Icons.Default.Warning, null)
+                            Spacer(Modifier.width(12.dp))
+                            Text("同步完成 · ${r.issues} 项需注意")
+                        }
+                        else -> {
+                            Icon(Icons.Default.Refresh, null)
+                            Spacer(Modifier.width(12.dp))
+                            AnimatedContent(
+                                targetState = when {
+                                    deleteMode -> "删除云端选中的 ${model.cloudSelected.size} 个文件"
+                                    selectionSync -> "同步选中的 ${model.selected.size} 个文件"
+                                    else -> "全量同步"
+                                },
+                                transitionSpec = { fadeIn(tween(120)) togetherWith fadeOut(tween(120)) },
+                                label = "btnLabel",
+                            ) { Text(it) }
+                        }
+                    }
                 }
             }
         },
@@ -418,17 +446,6 @@ internal fun MainScreen(model: AppModel) {
                     Button(onClick = { model.screen = Screen.Settings }) { Text("选择同步目录") }
                 }
                 return@Column
-            }
-            AnimatedVisibility(
-                visible = model.lastStats != null,
-                enter = expandVertically() + fadeIn(),
-                exit = shrinkVertically() + fadeOut(),
-            ) {
-                Text(
-                    model.lastStats.orEmpty(),
-                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-                    style = MaterialTheme.typography.bodySmall,
-                )
             }
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),

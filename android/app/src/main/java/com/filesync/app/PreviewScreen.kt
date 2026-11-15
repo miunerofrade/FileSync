@@ -70,6 +70,7 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Refresh
@@ -92,6 +93,9 @@ import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -166,6 +170,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -175,6 +180,7 @@ import org.json.JSONObject
 internal fun PreviewScreen(model: AppModel, rel: String) {
     val ext = rel.substringAfterLast('.', "").lowercase()
     Scaffold(
+        snackbarHost = { SnackbarHost(model.snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = {
@@ -388,7 +394,7 @@ private fun ActionRow(model: AppModel, rel: String) {
         Button(
             onClick = {
                 android.util.Log.d("FileSync", "Single file button clicked rel=$rel busy=${model.busy}")
-                scope.launch { model.runSync { it == rel || it.startsWith("$rel/") } }
+                scope.launch { model.runAndReport { model.runSync { it == rel || it.startsWith("$rel/") } } }
             },
             enabled = !model.busy && model.treeUri != null,
             modifier = Modifier.fillMaxWidth().height(48.dp),

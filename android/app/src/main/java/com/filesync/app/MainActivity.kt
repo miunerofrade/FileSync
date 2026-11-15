@@ -70,6 +70,7 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Refresh
@@ -92,6 +93,9 @@ import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -166,6 +170,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -196,6 +201,11 @@ internal fun Modifier.fileSharedBounds(key: String): Modifier {
 
 class ConflictPrompt(val info: ConflictInfo, val onChoice: (String) -> Unit)
 
+/** 同步完成后的按钮状态 */
+enum class SyncOutcome { Success, Issues, Fail }
+
+data class SyncResult(val outcome: SyncOutcome, val summary: String, val issues: Int)
+
 /** 同步方案：一组"本机目录 + 云端分组"。基线按 目录+分组 独立存储，方案间互不干扰。 */
 data class Profile(val id: String, val name: String, val treeUri: String?, val subDir: String)
 
@@ -223,10 +233,49 @@ class AppModel(val context: Context) {
     var dynamicColor by mutableStateOf(prefs.getBoolean("dynamicColor", true))
     var treeUri by mutableStateOf<String?>(prefs.getString("treeUri", null))
     var busy by mutableStateOf(false)
-    var lastStats by mutableStateOf<String?>(null)
     var refreshTick by mutableStateOf(0)
     var conflict by mutableStateOf<ConflictPrompt?>(null)
     val logLines = mutableStateListOf<String>()
+
+
+    // 同步结果反馈：底部按钮完成态 + Snackbar 摘要（简短统计 4s 自动消失）
+    val snackbarHostState = SnackbarHostState()
+    var syncResult by mutableStateOf<SyncResult?>(null)
+
+    /** 执行同步并把结果写入按钮态与 Snackbar。 */
+    suspend fun runAndReport(sync: suspend () -> SyncEngine.Stats?) {
+        val stats = sync()
+        val issues = stats?.let { it.skipped + it.failed } ?: 1
+        val r = when {
+            stats == null -> SyncResult(SyncOutcome.Fail, "同步失败", 1)
+            issues > 0 -> SyncResult(SyncOutcome.Issues, summarizeStats(stats), issues)
+            else -> SyncResult(SyncOutcome.Success, summarizeStats(stats), 0)
+        }
+        syncResult = r
+        snackbarHostState.showSnackbar(
+            r.summary,
+            withDismissAction = false,
+            duration = if (r.outcome == SyncOutcome.Issues) {
+                SnackbarDuration.Long
+            } else {
+                SnackbarDuration.Short
+            },
+        )
+        // Snackbar 消失后恢复按钮文案（用户中途切页/再次触发时同样收敛）
+        if (syncResult == r) syncResult = null
+    }
+
+    private fun summarizeStats(s: SyncEngine.Stats): String {
+        val parts = mutableListOf<String>()
+        if (s.uploaded > 0) parts.add("上传 ${s.uploaded}")
+        if (s.downloaded > 0) parts.add("下载 ${s.downloaded}")
+        if (s.resolved > 0) parts.add("解决冲突 ${s.resolved}")
+        if (s.cleaned > 0) parts.add("清理 ${s.cleaned}")
+        if (s.warnings > 0) parts.add("需注意 ${s.warnings}")
+        if (s.skipped > 0) parts.add("待处理冲突 ${s.skipped}")
+        if (s.failed > 0) parts.add("失败 ${s.failed}")
+        return if (parts.isEmpty()) "两端无变化" else parts.joinToString(" · ")
+    }
 
     // 自动更新（GitHub Release）：检查 / 下载进度 / 结果提示
     private val modelScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -566,11 +615,7 @@ class AppModel(val context: Context) {
                 } catch (_: Exception) {
                 }
             }
-            val stats = withContext(Dispatchers.IO) { buildEngine().sync(filter) }
-            lastStats =
-                "上传 ${stats.uploaded} · 下载 ${stats.downloaded} · 无变化 ${stats.unchanged} · 冲突解决 ${stats.resolved} · 跳过 ${stats.skipped} · 需注意 ${stats.warnings}" +
-                    if (stats.failed > 0) " · 失败 ${stats.failed}" else ""
-            return stats
+            return withContext(Dispatchers.IO) { buildEngine().sync(filter) }
         } catch (e: Exception) {
             android.util.Log.e("FileSync", "runSync failed", e)
             log("同步失败: ${e::class.java.simpleName}: ${e.message}")
