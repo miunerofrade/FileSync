@@ -271,7 +271,7 @@ class AppModel(val context: Context) {
         if (s.downloaded > 0) parts.add("下载 ${s.downloaded}")
         if (s.resolved > 0) parts.add("解决冲突 ${s.resolved}")
         if (s.cleaned > 0) parts.add("清理 ${s.cleaned}")
-        if (s.warnings > 0) parts.add("需注意 ${s.warnings}")
+        if (s.warnings > 0) parts.add("${s.warnings} 个文件因另一端已删除而保留")
         if (s.skipped > 0) parts.add("待处理冲突 ${s.skipped}")
         if (s.failed > 0) parts.add("失败 ${s.failed}")
         return if (parts.isEmpty()) "两端无变化" else parts.joinToString(" · ")
