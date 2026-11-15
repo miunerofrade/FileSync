@@ -865,6 +865,15 @@ internal fun joinDir(dir: String, name: String) = if (dir.isEmpty()) name else "
 
 internal fun parentDir(dir: String) = dir.substringBefore('/', "")
 
+/** 云端视图当前目录的直接子目录名：路径须在 cloudDir 下且去掉前缀后仍含 '/'（根目录散文件不算目录） */
+internal fun cloudChildDirs(paths: List<String>, cloudDir: String): List<String> {
+    val prefix = if (cloudDir.isEmpty()) "" else "$cloudDir/"
+    return paths.filter { it.startsWith(prefix) && it.removePrefix(prefix).contains('/') }
+        .map { it.removePrefix(prefix).substringBefore('/') }
+        .distinct()
+        .sorted()
+}
+
 internal fun shortSha(s: String) = s.take(12)
 
 internal fun formatBytes(n: Long): String {

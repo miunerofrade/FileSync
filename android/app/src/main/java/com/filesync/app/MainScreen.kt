@@ -709,13 +709,7 @@ private fun CloudFileList(
         l.isEmpty() -> Box(modifier, contentAlignment = Alignment.Center) { Text("云端为空") }
         else -> {
             // 按当前云端目录分层：直接子目录 + 当前目录下的文件（目录在前）
-            val prefix = if (cloudDir.isEmpty()) "" else "$cloudDir/"
-            val dirs = l.map { it.path }
-                .map { it.removePrefix(prefix) }
-                .filter { it.contains('/') }   // 仅多级路径产生子目录；根目录散文件不含 '/'，不能误当目录名
-                .map { it.substringBefore('/') }
-                .distinct()
-                .sorted()
+            val dirs = cloudChildDirs(l.map { it.path }, cloudDir)
             val files = l.filter { parentDir(it.path) == cloudDir }.sortedBy { it.path }
             if (dirs.isEmpty() && files.isEmpty()) {
                 Box(modifier, contentAlignment = Alignment.Center) { Text("此目录为空") }
