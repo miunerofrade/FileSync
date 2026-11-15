@@ -322,6 +322,12 @@ internal fun SettingsScreen(model: AppModel) {
                     picker.launch(null) // 新方案立即选目录
                 },
             )
+            ListItem(
+                headlineContent = { Text("同步日志") },
+                supportingContent = { Text("最近 ${LOG_MAX} 条同步记录（上传 / 下载 / 冲突 / 基线重置）") },
+                trailingContent = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null) },
+                modifier = Modifier.clickable { model.screen = Screen.Log },
+            )
             if (model.treeUri != null) {
                 ListItem(
                     headlineContent = {

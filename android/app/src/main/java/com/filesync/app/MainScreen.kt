@@ -80,7 +80,6 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.LinearProgressIndicator
@@ -114,7 +113,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -131,7 +129,6 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -563,28 +560,6 @@ internal fun MainScreen(model: AppModel) {
                                                     formatBytes(en.size),
                                                     style = MaterialTheme.typography.bodySmall,
                                                 )
-                                            }
-                                        }
-                                    }
-                                }
-                                if (model.logLines.isNotEmpty()) {
-                                    item {
-                                        Card(
-                                            Modifier
-                                                .fillMaxWidth()
-                                                .padding(12.dp),
-                                        ) {
-                                            Column(
-                                                Modifier.padding(12.dp),
-                                                verticalArrangement = Arrangement.spacedBy(2.dp),
-                                            ) {
-                                                model.logLines.takeLast(10).forEach {
-                                                    Text(
-                                                        it,
-                                                        style = MaterialTheme.typography.bodySmall,
-                                                        fontFamily = FontFamily.Monospace,
-                                                    )
-                                                }
                                             }
                                         }
                                     }

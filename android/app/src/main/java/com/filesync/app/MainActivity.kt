@@ -178,8 +178,14 @@ import org.json.JSONObject
 sealed class Screen {
     data object Main : Screen()
     data object Settings : Screen()
+    data object Log : Screen()
     data class Preview(val rel: String) : Screen()
 }
+
+/** 同步日志条目（持久化到 prefs，保留最近 LOG_MAX 条）。 */
+data class LogEntry(val time: Long, val message: String)
+
+internal const val LOG_MAX = 100
 
 /** 共享元素转场作用域（文件名从列表"飞入"预览页标题）。 */
 @OptIn(ExperimentalSharedTransitionApi::class)
@@ -238,7 +244,10 @@ class AppModel(val context: Context) {
     var busy by mutableStateOf(false)
     var refreshTick by mutableStateOf(0)
     var conflict by mutableStateOf<ConflictPrompt?>(null)
-    val logLines = mutableStateListOf<String>()
+
+    /** 同步日志：独立存储，最多保留 100 条，App 重启后仍在 */
+    var logEntries by mutableStateOf(loadLog())
+        private set
 
 
     // 同步结果反馈：底部按钮完成态 + Snackbar 摘要（简短统计 4s 自动消失）
@@ -495,8 +504,28 @@ class AppModel(val context: Context) {
         }
 
     fun log(s: String) {
-        logLines.add(s)
-        while (logLines.size > 200) logLines.removeAt(0)
+        val list = logEntries + LogEntry(System.currentTimeMillis(), s)
+        logEntries = if (list.size > LOG_MAX) list.takeLast(LOG_MAX) else list
+        saveLog()
+    }
+
+    fun clearLog() {
+        logEntries = emptyList()
+        saveLog()
+    }
+
+    private fun loadLog(): List<LogEntry> = runCatching {
+        val arr = JSONArray(prefs.getString("syncLog", "[]") ?: "[]")
+        (0 until arr.length()).map { i ->
+            val o = arr.getJSONObject(i)
+            LogEntry(o.getLong("t"), o.getString("m"))
+        }
+    }.getOrDefault(emptyList())
+
+    private fun saveLog() {
+        val arr = JSONArray()
+        logEntries.forEach { arr.put(JSONObject().put("t", it.time).put("m", it.message)) }
+        prefs.edit().putString("syncLog", arr.toString()).apply()
     }
 
     fun saveSettings() {
@@ -757,6 +786,7 @@ fun FileSyncApp() {
                                 when (s) {
                                     Screen.Main -> MainScreen(model)
                                     Screen.Settings -> SettingsScreen(model)
+                                    Screen.Log -> LogScreen(model)
                                     is Screen.Preview -> PreviewScreen(model, s.rel)
                                 }
                             }
