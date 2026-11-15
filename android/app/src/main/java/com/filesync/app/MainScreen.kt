@@ -711,8 +711,9 @@ private fun CloudFileList(
             // 按当前云端目录分层：直接子目录 + 当前目录下的文件（目录在前）
             val prefix = if (cloudDir.isEmpty()) "" else "$cloudDir/"
             val dirs = l.map { it.path }
-                .filter { it.length > prefix.length && it.startsWith(prefix) }
-                .map { it.removePrefix(prefix).substringBefore('/') }
+                .map { it.removePrefix(prefix) }
+                .filter { it.contains('/') }   // 仅多级路径产生子目录；根目录散文件不含 '/'，不能误当目录名
+                .map { it.substringBefore('/') }
                 .distinct()
                 .sorted()
             val files = l.filter { parentDir(it.path) == cloudDir }.sortedBy { it.path }

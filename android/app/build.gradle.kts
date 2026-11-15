@@ -12,8 +12,8 @@ android {
         applicationId = "com.filesync.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 28
-        versionName = "1.4.8"
+        versionCode = 29
+        versionName = "1.4.9"
     }
 
     buildTypes {
